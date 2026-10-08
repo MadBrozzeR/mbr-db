@@ -1,0 +1,31 @@
+{
+  "name": "mbr-db",
+  "version": "0.0.1",
+  "description": "Database by MadBrozzeR",
+  "keywords": [
+    "database",
+    "db",
+    "base",
+    "data"
+  ],
+  "homepage": "https://github.com/MadBrozzeR/mbr-db#readme",
+  "bugs": {
+    "url": "https://github.com/MadBrozzeR/mbr-db/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MadBrozzeR/mbr-db.git"
+  },
+  "license": "ISC",
+  "author": "MadBrozzeR",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "compile": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^7.0.2"
+  }
+}
