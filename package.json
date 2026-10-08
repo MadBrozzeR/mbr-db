@@ -21,8 +21,9 @@
   "type": "commonjs",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "compile": "tsc"
+    "test-app": "echo \"Error: no test specified\" && exit 1",
+    "compile": "tsc",
+    "test": "tsc && node test.js"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",
