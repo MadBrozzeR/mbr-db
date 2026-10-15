@@ -11,10 +11,14 @@ export class Pager {
   }
 
   /**
-   * Opens the file handle. If the file doesn't exist, 'r+' creates an error, 
+   * Opens the file handle. If the file doesn't exist, 'r+' creates an error,
    * so we use 'a+' or open with 'w+' if it's a new file. 'r+' ensures we can read and write.
    */
-  async open(): Promise<void> {
+  async open(): Promise<this> {
+    if (this.fileHandle) {
+      return this;
+    }
+
     // Open for reading and writing. The file is created if it does not exist.
     this.fileHandle = await fs.open(this.filePath, 'a+');
 
@@ -24,13 +28,15 @@ export class Pager {
 
     const stat = await this.fileHandle.stat();
     this.totalPages = Math.floor(stat.size / PAGE_SIZE);
+
+    return this;
   }
 
   /**
    * Reads a 4KB page from disk into a fresh Buffer
    */
   async readPage(pageId: number): Promise<Buffer> {
-    if (!this.fileHandle) throw new Error("Pager is not open");
+    if (!this.fileHandle) throw new Error(`Pager for ${this.filePath} is not open`);
 
     const buffer = Buffer.alloc(PAGE_SIZE);
     const offset = pageId * PAGE_SIZE;
@@ -51,7 +57,7 @@ export class Pager {
    * Writes a 4KB buffer to a specific pageId on disk
    */
   async writePage(pageId: number, buffer: Buffer): Promise<void> {
-    if (!this.fileHandle) throw new Error("Pager is not open");
+    if (!this.fileHandle) throw new Error(`Pager for ${this.filePath} is not open`);
     if (buffer.length !== PAGE_SIZE) {
       throw new Error(`Buffer size must be exactly ${PAGE_SIZE} bytes`);
     }

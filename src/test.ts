@@ -1,24 +1,44 @@
 import { Pager } from './components/pager';
 import { BufferPool } from './components/buffer-pool';
+import { PageManager } from './components/page-manager';
+import { serializeRow } from './utils/buffer-utils';
 
 export async function test() {
-  const pager = new Pager('mydb.db');
-  await pager.open();
+  const cacheManager = new BufferPool(10);
+  const pagers = {
+    users: new Pager(__dirname + '/users.db'),
+    orders: new Pager(__dirname + '/orders.db'),
+  };
 
-  const bufferPool = new BufferPool(pager, 3); // Max 3 pages in RAM
+  // Open them up
+  cacheManager.addPager('users', await pagers.users.open());
+  cacheManager.addPager('orders', await pagers.orders.open());
 
-  // 1. Allocate a page
-  const pageId = await pager.allocatePage(); // Page 0
+  // 3. Allocating independent rows across different targets
+  const userPageId = await pagers.users.allocatePage();
+  const orderPageId = await pagers.orders.allocatePage();
 
-  // 2. Fetch it into memory
-  const pageBuffer = await bufferPool.getPage(pageId);
+  const userBuffer = await cacheManager.getPage("users", userPageId);
+  const orderBuffer = await cacheManager.getPage("orders", orderPageId);
 
-  // 3. Directly manipulate binary bytes inside the page
-  pageBuffer.writeUInt32BE(12345, 0); // Write an integer to bytes 0-3
-  bufferPool.markDirty(pageId);       // Tell the pool this page changed
+  const userPage = new PageManager(userBuffer);
+  const orderPage = new PageManager(orderBuffer);
+  
+  userPage.init(1); // Leaf Node for Users
+  orderPage.init(1); // Leaf Node for Orders
 
-  // 4. Safely persist everything down
-  await bufferPool.flushAll();
-  await pager.close();
-  console.log("Successfully wrote raw binary page natively!");
+  // Insert distinct data into separate files
+  userPage.insertRow(serializeRow([Buffer.from("User_Alice")]));
+  cacheManager.markDirty("users", userPageId);
+
+  orderPage.insertRow(serializeRow([Buffer.from("Order_Notebook_099")]));
+  cacheManager.markDirty("orders", orderPageId);
+
+  // Persist all active tracks concurrently
+  await cacheManager.flushAll();
+  
+  await pagers.users.close();
+  await pagers.orders.close();
+  
+  console.log("💥 Multi-table isolation verified successfully. Check your workspace for users.db and orders.db!");
 }

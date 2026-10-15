@@ -6,10 +6,12 @@ import { Pager } from './pager';
 export class TreeBalancer {
   private pager: Pager;
   private bufferPool: BufferPool;
+  private table: string;
 
-  constructor(pager: Pager, bufferPool: BufferPool) {
+  constructor(table: string, pager: Pager, bufferPool: BufferPool) {
     this.pager = pager;
     this.bufferPool = bufferPool;
+    this.table = table;
   }
 
   /**
@@ -18,7 +20,7 @@ export class TreeBalancer {
    */
   async splitLeafPage(leftPageId: number, pendingFields: Array<Buffer | null>): Promise<{ rightPageId: number; boundaryKey: Buffer }> {
     // 1. Fetch the overloaded left page buffer from memory
-    const leftBuffer = await this.bufferPool.getPage(leftPageId);
+    const leftBuffer = await this.bufferPool.getPage(this.table, leftPageId);
     const leftManager = new PageManager(leftBuffer);
     const totalSlots = leftManager.getSlotCount();
 
@@ -40,7 +42,7 @@ export class TreeBalancer {
 
     // 4. Allocate a brand new page frame on disk to act as our right sibling
     const rightPageId = await this.pager.allocatePage();
-    const rightBuffer = await this.bufferPool.getPage(rightPageId);
+    const rightBuffer = await this.bufferPool.getPage(this.table, rightPageId);
     const rightManager = new PageManager(rightBuffer);
 
     // Initialize the right page, inheriting the left page's original sibling chain
@@ -73,8 +75,8 @@ export class TreeBalancer {
     }
 
     // Mark both pages as dirty in memory so the Buffer Pool flushes them to disk
-    this.bufferPool.markDirty(leftPageId);
-    this.bufferPool.markDirty(rightPageId);
+    this.bufferPool.markDirty(this.table, leftPageId);
+    this.bufferPool.markDirty(this.table, rightPageId);
 
     return {
       rightPageId,
