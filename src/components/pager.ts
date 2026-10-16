@@ -1,3 +1,4 @@
+import path from 'node:path';
 import fs, { FileHandle } from 'node:fs/promises';
 import { PAGE_SIZE } from '../constants';
 
@@ -19,6 +20,22 @@ export class Pager {
       return this;
     }
 
+    try {
+      await fs.access(this.filePath, fs.constants.F_OK);
+      this.fileHandle = await fs.open(this.filePath, 'r+');
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+        const dirname = path.dirname(this.filePath);
+        await fs.mkdir(dirname, { recursive: true });
+        // Open for reading and writing. The file is created if it does not exist.
+        this.fileHandle = await fs.open(this.filePath, 'a+');
+        // Re-open in r+ mode so we can write at arbitrary offsets (a+ forces writes to EOF)
+        await this.fileHandle.close();
+        this.fileHandle = await fs.open(this.filePath, 'r+');
+      } else {
+        throw error;
+      }
+    }
     // Open for reading and writing. The file is created if it does not exist.
     this.fileHandle = await fs.open(this.filePath, 'a+');
 
