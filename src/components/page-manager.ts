@@ -1,10 +1,18 @@
 import { PAGE_SIZE, HEADER_SIZE, SLOT_SIZE } from '../constants';
+import { CacheFrame } from './buffer-pool';
+import { ControlledError } from './errors';
 
 export class PageManager {
   private pageBuffer: Buffer;
+  private bufferPoolFrame: CacheFrame | null;
 
-  constructor(pageBuffer: Buffer) {
+  constructor(pageBuffer: Buffer, cacheFrame?: CacheFrame) {
     this.pageBuffer = pageBuffer;
+    this.bufferPoolFrame = cacheFrame || null;
+  }
+
+  markDirty() {
+    this.bufferPoolFrame && (this.bufferPoolFrame.isDirty = true);
   }
 
   /**
@@ -16,17 +24,18 @@ export class PageManager {
     this.pageBuffer.writeUInt16BE(0, 2);              // slot_count
     this.pageBuffer.writeUInt16BE(PAGE_SIZE, 4);      // free_space_pointer (starts at 4096)
     this.pageBuffer.writeUInt16BE(0, 6);              // deleted_bytes
-    this.pageBuffer.writeUInt32BE(nextPageId, 8);     // next_page_id
+    this.setNextPageId(nextPageId);                   // next_page_id
+    this.markDirty();
   }
 
   // --- Header Getters & Setters ---
   getPageType(): number { return this.pageBuffer.readUInt16BE(0); }
   getSlotCount(): number { return this.pageBuffer.readUInt16BE(2); }
-  private setSlotCount(value: number) { this.pageBuffer.writeUInt16BE(value, 2); }
+  private setSlotCount(value: number) { this.pageBuffer.writeUInt16BE(value, 2); this.markDirty(); }
   getFreeSpacePointer(): number { return this.pageBuffer.readUInt16BE(4); }
-  private setFreeSpacePointer(value: number) { this.pageBuffer.writeUInt16BE(value, 4); }
+  private setFreeSpacePointer(value: number) { this.pageBuffer.writeUInt16BE(value, 4); this.markDirty(); }
   getDeletedBytes(): number { return this.pageBuffer.readUInt16BE(6); }
-  private setDeletedBytes(value: number) { this.pageBuffer.writeUInt16BE(value, 6); }
+  private setDeletedBytes(value: number) { this.pageBuffer.writeUInt16BE(value, 6); this.markDirty(); }
   getNextPageId(): number { return this.pageBuffer.readUInt32BE(8); }
 
   /**
@@ -39,6 +48,21 @@ export class PageManager {
 
     // Contiguous space between the slot array end and the last data payload
     return freeSpacePointer - currentSlotEnd;
+  }
+
+  checkSpaceIsAvailable(size: number) {
+    const available = this.getAvailableFreeSpace();
+
+    if (size <= available) {
+      return true;
+    }
+
+    return size <= (available + this.getDeletedBytes());
+  }
+
+  setNextPageId(id: number) {
+    this.pageBuffer.writeUInt32BE(id, 8);
+    this.markDirty();
   }
 
   /**
@@ -55,7 +79,7 @@ export class PageManager {
     }
 
     if (available < requiredSpace) {
-      throw new Error("Page overflow: Not enough space to store this record.");
+      throw new ControlledError('PAGE_OUT_OF_SPACE');
     }
 
     const slotCount = this.getSlotCount();
@@ -72,7 +96,7 @@ export class PageManager {
     // 3. Update headers
     this.setSlotCount(slotCount + 1);
     this.setFreeSpacePointer(newFreeSpacePointer);
-
+    this.markDirty();
     return slotCount; // Returns the index pointer to this row
   }
 
@@ -111,6 +135,7 @@ export class PageManager {
 
     // Add this to our fragmentation counter
     this.setDeletedBytes(this.getDeletedBytes() + length);
+    this.markDirty();
     return true;
   }
 
@@ -142,5 +167,6 @@ export class PageManager {
     tempBuffer.copy(this.pageBuffer, tempPointer, tempPointer, PAGE_SIZE);
     this.setFreeSpacePointer(tempPointer);
     this.setDeletedBytes(0); // All fragmented space reclaimed!
+    this.markDirty();
   }
 }

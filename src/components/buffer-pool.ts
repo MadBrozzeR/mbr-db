@@ -1,3 +1,4 @@
+import { ControlledError } from './errors';
 import { Pager } from './pager';
 
 export interface CacheFrame {
@@ -10,7 +11,7 @@ export interface CacheFrame {
 export class BufferPool {
   private pagers = new Map<string, Pager>();
   private maxPages: number;
-  private pool: Map<string, CacheFrame> = new Map();
+  private pool = new Map<string, CacheFrame>();
 
   constructor(maxPages: number = 20) {
     this.maxPages = maxPages;
@@ -30,7 +31,12 @@ export class BufferPool {
   /**
    * Retrieves a page buffer. Uses cache if available, otherwise reads from disk.
    */
-  async getPage(table: string, pageId: number): Promise<Buffer> {
+  async getPage(table: string, pageId: number): Promise<Buffer | null> {
+    const frame = await this.getFrame(table, pageId);
+    return frame?.buffer || null;
+  }
+
+  async getFrame(table: string, pageId: number): Promise<CacheFrame | null> {
     const cacheKey = this.makeKey(table, pageId);
 
     // Cache Hit
@@ -39,12 +45,7 @@ export class BufferPool {
       // Refresh LRU order by deleting and re-inserting
       this.pool.delete(cacheKey);
       this.pool.set(cacheKey, frame);
-      return frame.buffer;
-    }
-
-    // Cache Miss -> Evict oldest page if pool is full
-    if (this.pool.size >= this.maxPages) {
-      await this.evictOne();
+      return frame;
     }
 
     const pager = this.pagers.get(table);
@@ -52,28 +53,46 @@ export class BufferPool {
       throw new Error(`No active table pager found for table: ${table}`);
     }
 
+    if (pageId >= pager.getTotalPages()) {
+      return null;
+    }
+
+    // Cache Miss -> Evict oldest page if pool is full
+    if (this.pool.size >= this.maxPages) {
+      await this.evictOne();
+    }
+
     // Read from physical disk via Pager
     const buffer = await pager.readPage(pageId);
+    if (buffer.length === 0) {
+      return null;
+    }
 
-    this.pool.set(cacheKey, {
+    const frame = {
       table,
       pageId,
       buffer,
       isDirty: false,
-    });
+    };
 
-    return buffer;
+    this.pool.set(cacheKey, frame);
+
+    return frame;
   }
 
   /**
    * Marks a page buffer as modified (dirty) so we know it needs flushing later
    */
   markDirty(table: string, pageId: number): void {
-    const cacheKey = this.makeKey(table, pageId);
-    const frame = this.pool.get(cacheKey);
+    const frame = this.retrieveFrame(table, pageId);
     if (frame) {
       frame.isDirty = true;
     }
+  }
+
+  retrieveFrame(table: string, pageId: number) {
+    const cacheKey = this.makeKey(table, pageId);
+    return this.pool.get(cacheKey);
   }
 
   /**
@@ -106,5 +125,13 @@ export class BufferPool {
     }
 
     this.pool.delete(oldestKey);
+  }
+
+  getTotalPages(table: string) {
+    const pager = this.pagers.get(table);
+    if (!pager) {
+      throw new ControlledError('TABLE_NOT_FOUND');
+    }
+    return pager.getTotalPages();
   }
 }
