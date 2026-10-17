@@ -8,6 +8,7 @@ export class PagePool {
   bufferPool: BufferPool;
   pagers: Record<string, Pager> = {};
   openPagers: Record<string, Pager> = {};
+  pageManager = new PageManager();
 
   constructor(number = DEFAULT_POOL_COUNT) {
     this.bufferPool = new BufferPool(number);
@@ -34,7 +35,7 @@ export class PagePool {
 
   async getPage(table: string, index: number) {
     const frame = await this.bufferPool.getFrame(table, index);
-    return frame && new PageManager(frame.buffer, frame);
+    return frame && this.pageManager.setTarget(frame.buffer, frame);
   }
 
   async *iterate(table: string) {

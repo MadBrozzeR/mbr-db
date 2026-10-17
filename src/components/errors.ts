@@ -2,6 +2,7 @@ export const REASON = {
   PAGE_OUT_OF_SPACE: 'Page overflow: Not enough space to store this record.',
   TABLE_NOT_FOUND: 'Could not find this table in pager',
   PAGE_WAS_NOT_CREATED: 'Page was not created',
+  PAGE_MANAGER_EMPTY: 'PageManager is empty. Set buffer first.',
 };
 
 type Reason = keyof typeof REASON;
