@@ -25,7 +25,7 @@ export class TableAccessor {
 
     for await (const { pageManager, id } of this.pagerPool.iterate(this.tableName)) {
       if (pageManager.checkSpaceIsAvailable(recordSize)) {
-        slotIndex = pageManager.insertRow(serializedRecord);
+        slotIndex = pageManager.insertSortedRow(serializedRecord);
         pageId = id;
         break;
       }
@@ -33,7 +33,7 @@ export class TableAccessor {
 
     if (slotIndex < 0) {
       const { pageManager, id } = await this.pagerPool.allocatePage(this.tableName);
-      slotIndex = pageManager.insertRow(serializedRecord);
+      slotIndex = pageManager.insertSortedRow(serializedRecord);
       pageId = id;
     }
 
@@ -58,5 +58,9 @@ export class TableAccessor {
     const result = page?.deleteRow(slotIndex) || false;
 
     return result;
+  }
+
+  async getRawPage(index: number) {
+    return (await this.pagerPool.getPage(this.tableName, index))?.getBuffer();
   }
 }

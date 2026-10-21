@@ -2,12 +2,12 @@
  * Deserializes a single isolated row chunk.
  * Returns an array where each item is either a Buffer (present) or null (missing entirely).
  */
-export function deserializeRow(rowBuffer: Buffer): (Buffer | null)[] {
+export function deserializeRow(rowBuffer: Buffer, fieldCount = -1): (Buffer | null)[] {
   const fields: Array<Buffer | null> = [];
   let offset = 0;
 
   // The loop terminates safely when it consumes exactly the rowBuffer's isolated length
-  while (offset < rowBuffer.length) {
+  while (fieldCount-- !== 0 && offset < rowBuffer.length) {
     const header = rowBuffer.readUInt8(offset);
     offset += 1;
 
