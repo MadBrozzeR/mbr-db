@@ -1,4 +1,4 @@
-import { PAGE_SIZE, HEADER_SIZE, SLOT_SIZE } from '../constants';
+import { PAGE_SIZE, HEADER_SIZE, SLOT_SIZE, PAGE_HEADER_MASK, PAGE_TYPE } from '../constants';
 import { deserializeRow } from '../utils/buffer-utils';
 import { BinarySearch } from '../utils/math-utils';
 import { CacheFrame } from './buffer-pool';
@@ -44,10 +44,11 @@ export class PageManager {
   /**
    * Formats a raw blank buffer with baseline database metadata headers.
    */
-  init(pageType: number, nextPageId: number = 0): void {
+  init(pageType: (typeof PAGE_TYPE)[keyof typeof PAGE_TYPE], nextPageId: number = 0): void {
     const buffer = this.getBuffer();
     buffer.fill(0); // Clean slate
-    buffer.writeUInt16BE(pageType, 0);       // page_type
+    buffer.writeUInt8(pageType, 0);       // page_type
+    buffer.writeUInt8(0, 1);       // reserved
     buffer.writeUInt16BE(0, 2);              // slot_count
     buffer.writeUInt16BE(PAGE_SIZE, 4);      // free_space_pointer (starts at 4096)
     buffer.writeUInt16BE(0, 6);              // deleted_bytes
@@ -55,15 +56,27 @@ export class PageManager {
     // this.markDirty(); // no need in making it dirty, because setNextPageId already done it.
   }
 
+  private setBit(byteIndex: number, mask: number, isSet = true) {
+    const buffer = this.getBuffer();
+    const current = buffer.readUInt8(byteIndex);
+    const newValue = isSet ? (current | mask) : (current & ~mask);
+    if (current !== newValue) {
+      buffer.writeUInt8(newValue);
+      this.markDirty();
+    }
+  }
+
   // --- Header Getters & Setters ---
-  getPageType(): number { return this.getBuffer().readUInt16BE(0); }
+  getPageType(): number { return this.getBuffer().readUInt8(0) & PAGE_HEADER_MASK.TYPE_MASK; }
   getSlotCount(): number { return this.getBuffer().readUInt16BE(2); }
   getFreeSpacePointer(): number { return this.getBuffer().readUInt16BE(4); }
   getDeletedBytes(): number { return this.getBuffer().readUInt16BE(6); }
   getNextPageId(): number { return this.getBuffer().readUInt32BE(8); }
+  isRootPage() { return this.getBuffer().readUint8(0) & PAGE_HEADER_MASK.IS_ROOT }
   private setSlotCount(value: number) { this.getBuffer().writeUInt16BE(value, 2); this.markDirty(); }
   private setFreeSpacePointer(value: number) { this.getBuffer().writeUInt16BE(value, 4); this.markDirty(); }
   private setDeletedBytes(value: number) { this.getBuffer().writeUInt16BE(value, 6); this.markDirty(); }
+  setRootPage(value: boolean) { this.setBit(0, PAGE_HEADER_MASK.IS_ROOT, value); }
 
   /**
    * Calculates how much space is left for new rows before triggering a split.
