@@ -1,15 +1,16 @@
 import { PAGE_SIZE, HEADER_SIZE, SLOT_SIZE, PAGE_HEADER_MASK, PAGE_TYPE } from '../constants';
-import { deserializeRow } from '../utils/buffer-utils';
+import { deserializeRow, serializeRow } from '../utils/buffer-utils';
 import { BinarySearch } from '../utils/math-utils';
 import { CacheFrame } from './buffer-pool';
 import { ControlledError } from './errors';
 
-type BinarySearcParams = { key: Buffer; manager: PageManager };
+type BinarySearchParams = { key: Buffer; manager: PageManager };
+const DEFAULT_BUFFER = Buffer.alloc(0);
 
 export class PageManager {
-  private pageBuffer: Buffer | null;
+  private pageBuffer: Buffer;
   private cacheFrame: CacheFrame | null;
-  static search = new BinarySearch<BinarySearcParams>(function (index, params) {
+  static search = new BinarySearch<BinarySearchParams>(function (index, params) {
     const currentKey = params.manager.getKeyFromSlot(index);
     if (currentKey === null) {
       return;
@@ -18,8 +19,8 @@ export class PageManager {
     return params.key.compare(currentKey);
   });
 
-  constructor(pageBuffer?: Buffer | null, cacheFrame?: CacheFrame | null) {
-    this.pageBuffer = pageBuffer || null;
+  constructor(pageBuffer?: Buffer, cacheFrame?: CacheFrame | null) {
+    this.pageBuffer = pageBuffer || DEFAULT_BUFFER;
     this.cacheFrame = cacheFrame || null;
   }
 
@@ -34,17 +35,28 @@ export class PageManager {
   }
 
   getBuffer() {
-    if (!this.pageBuffer) {
-      throw new ControlledError('PAGE_MANAGER_EMPTY');
-    }
-
     return this.pageBuffer;
+  }
+
+  /**
+   * Sets the Leftmost Child Pointer for internal routing nodes.
+   * Reuses the next_page_id header slot (Bytes 8-11).
+   */
+  setLeftmostChildId(pageId: number): void {
+    this.setNextPageId(pageId);
+  }
+
+  /**
+   * Retrieves the Leftmost Child Pointer for internal routing nodes.
+   */
+  getLeftmostChildId(): number {
+    return this.getNextPageId();
   }
 
   /**
    * Formats a raw blank buffer with baseline database metadata headers.
    */
-  init(pageType: (typeof PAGE_TYPE)[keyof typeof PAGE_TYPE], nextPageId: number = 0): void {
+  init(pageType: (typeof PAGE_TYPE)[keyof typeof PAGE_TYPE]): void {
     const buffer = this.getBuffer();
     buffer.fill(0); // Clean slate
     buffer.writeUInt8(pageType, 0);       // page_type
@@ -52,8 +64,8 @@ export class PageManager {
     buffer.writeUInt16BE(0, 2);              // slot_count
     buffer.writeUInt16BE(PAGE_SIZE, 4);      // free_space_pointer (starts at 4096)
     buffer.writeUInt16BE(0, 6);              // deleted_bytes
-    this.setNextPageId(nextPageId);                   // next_page_id
-    // this.markDirty(); // no need in making it dirty, because setNextPageId already done it.
+    // this.setNextPageId(nextPageId);                   // next_page_id
+    this.markDirty(); // no need in making it dirty, because setNextPageId already done it.
   }
 
   private setBit(byteIndex: number, mask: number, isSet = true) {
@@ -105,56 +117,92 @@ export class PageManager {
     this.markDirty();
   }
 
+  private requestAvailableSpace(bufferSize: number) {
+    const requiredSpace = SLOT_SIZE + bufferSize;
+    const available = this.getAvailableFreeSpace();
+
+    if (available < requiredSpace) {
+      if ((available + this.getDeletedBytes()) < requiredSpace) {
+        throw new ControlledError('PAGE_OUT_OF_SPACE');
+      }
+      // If we have fragmentation, try defragmenting first
+      this.defragment();
+    }
+  }
+
+  private addRecord(slotIndex: number, rowBuffer: Buffer, slotCount = this.getSlotCount()) {
+    const pageBuffer = this.getBuffer();
+    const newFreeSpacePointer = this.getFreeSpacePointer() - rowBuffer.length;
+
+    // 2. Copy the record data payload to the bottom of the page frame
+    rowBuffer.copy(pageBuffer, newFreeSpacePointer);
+
+    // 3. Shift the 4-byte slot pointers to open up a vacant position
+    if (slotIndex < slotCount) {
+      const sourceOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
+      const destinationOffset = sourceOffset + SLOT_SIZE;
+      const bytesToShift = (slotCount - slotIndex) * SLOT_SIZE;
+
+      // Safe overlapping block memory shift inside the native buffer
+      pageBuffer.copy(pageBuffer, destinationOffset, sourceOffset, sourceOffset + bytesToShift);
+    }
+
+    // 4. Write coordinates into the newly created slot gap
+    const targetSlotOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
+    pageBuffer.writeUInt16BE(newFreeSpacePointer, targetSlotOffset);
+    pageBuffer.writeUInt16BE(rowBuffer.length, targetSlotOffset + 2);
+
+    // 5. Commit structural header changes
+    this.setSlotCount(slotCount + 1);
+    this.setFreeSpacePointer(newFreeSpacePointer);
+    // this.markDirty(); // Done above
+
+    return slotIndex;
+  }
+
   /**
    * Inserts a packed row into the page. Returns the assigned slotIndex.
    */
   insertRow(rowBuffer: Buffer): number {
-    const requiredSpace = SLOT_SIZE + rowBuffer.length;
-    let available = this.getAvailableFreeSpace();
-
-    // If we have fragmentation, try defragmenting first
-    if (available < requiredSpace && (available + this.getDeletedBytes()) >= requiredSpace) {
-      this.defragment();
-      available = this.getAvailableFreeSpace();
-    }
-
-    if (available < requiredSpace) {
-      throw new ControlledError('PAGE_OUT_OF_SPACE');
-    }
-
+    this.requestAvailableSpace(rowBuffer.length);
     const slotCount = this.getSlotCount();
-    const newFreeSpacePointer = this.getFreeSpacePointer() - rowBuffer.length;
-
-    // 1. Copy the row data to the bottom of the page
-    rowBuffer.copy(this.getBuffer(), newFreeSpacePointer);
-
-    // 2. Append the 4-byte slot pointer at the end of the slot array
-    const slotOffset = HEADER_SIZE + (slotCount * SLOT_SIZE);
-    this.getBuffer().writeUInt16BE(newFreeSpacePointer, slotOffset); // Data Offset
-    this.getBuffer().writeUInt16BE(rowBuffer.length, slotOffset + 2); // Data Length
-
-    // 3. Update headers
-    this.setSlotCount(slotCount + 1);
-    this.setFreeSpacePointer(newFreeSpacePointer);
-    this.markDirty();
-    return slotCount; // Returns the index pointer to this row
+    return this.addRecord(slotCount, rowBuffer, slotCount);
   }
 
   /**
    * Extracts a specific single row slice using its slot index.
    */
   getRow(slotIndex: number): Buffer | null {
+    const buffer = this.getBuffer();
     if (slotIndex < 0 || slotIndex >= this.getSlotCount()) return null;
 
     const slotOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
-    const offset = this.getBuffer().readUInt16BE(slotOffset);
-    const length = this.getBuffer().readUInt16BE(slotOffset + 2);
+    const offset = buffer.readUInt16BE(slotOffset);
+    const length = buffer.readUInt16BE(slotOffset + 2);
 
     // An offset of 0 flags a deleted row slot
     if (offset === 0) return null;
 
     // Return a zero-copy direct view into the page frame memory
-    return this.getBuffer().subarray(offset, offset + length);
+    return buffer.subarray(offset, offset + length);
+  }
+
+  updateRowFixed(slotIndex: number, rowBuffer: Buffer) {
+    const buffer = this.getBuffer();
+    const slotOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
+    const offset = buffer.readUInt16BE(slotOffset);
+    const currentData = this.getRow(slotIndex);
+
+    if (!currentData) {
+      throw new ControlledError('RECORD_NOT_FOUND');
+    }
+    if (rowBuffer.length !== currentData.length) {
+      throw new ControlledError('SIZE_DOES_NOT_MATCH', { source: currentData.length, target: rowBuffer.length });
+    }
+    if (currentData.compare(rowBuffer) === 0) {
+      return;
+    }
+    rowBuffer.copy(buffer, offset);
   }
 
   /**
@@ -162,16 +210,17 @@ export class PageManager {
    * The space is reclaimed automatically later via defragmentation.
    */
   deleteRow(slotIndex: number): boolean {
+    const buffer = this.getBuffer();
     if (slotIndex < 0 || slotIndex >= this.getSlotCount()) return false;
 
     const slotOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
-    const offset = this.getBuffer().readUInt16BE(slotOffset);
-    const length = this.getBuffer().readUInt16BE(slotOffset + 2);
+    const offset = buffer.readUInt16BE(slotOffset);
+    const length = buffer.readUInt16BE(slotOffset + 2);
 
     if (offset === 0) return false; // Already deleted
 
     // Soft delete: clear out slot data coordinates, preserve index slot position
-    this.getBuffer().writeUInt32BE(0, slotOffset);
+    buffer.writeUInt32BE(0, slotOffset);
 
     // Add this to our fragmentation counter
     this.setDeletedBytes(this.getDeletedBytes() + length);
@@ -211,10 +260,6 @@ export class PageManager {
     this.markDirty();
   }
 
-  clone() {
-    return new PageManager(this.pageBuffer, this.cacheFrame);
-  }
-
   /**
    * Helper to extract the comparison key (Field 0) from a raw row stored in the page buffer.
    */
@@ -233,18 +278,7 @@ export class PageManager {
    * Inserts a record and maintains strict sorting inside the slot array.
    */
   insertSortedRow(rowBuffer: Buffer): number {
-    const pageBuffer = this.getBuffer();
-    const requiredSpace = SLOT_SIZE + rowBuffer.length;
-    let available = this.getAvailableFreeSpace();
-
-    if (available < requiredSpace && (available + this.getDeletedBytes()) >= requiredSpace) {
-      this.defragment();
-      available = this.getAvailableFreeSpace();
-    }
-
-    if (available < requiredSpace) {
-      throw new ControlledError('PAGE_OUT_OF_SPACE');
-    }
+    this.requestAvailableSpace(rowBuffer.length);
 
     const newKey = deserializeRow(rowBuffer, 1)[0];
     if (!newKey) {
@@ -257,36 +291,110 @@ export class PageManager {
     let targetSlotIndex = PageManager.search.run(slotCount, searcParams);
 
     if (targetSlotIndex !== -1) {
-      targetSlotIndex = PageManager.search.high;
-    } else {
       throw new ControlledError('DUPLICATE_RECORD_ID', { id: `<${newKey.toString('hex')}>` });
     }
 
-    const newFreeSpacePointer = this.getFreeSpacePointer() - rowBuffer.length;
+    targetSlotIndex = PageManager.search.high;
 
-    // 2. Copy the record data payload to the bottom of the page frame
-    rowBuffer.copy(pageBuffer, newFreeSpacePointer);
+    return this.addRecord(targetSlotIndex, rowBuffer, slotCount);
+  }
 
-    // 3. Shift the 4-byte slot pointers to open up a vacant position
-    if (targetSlotIndex < slotCount) {
-      const sourceOffset = HEADER_SIZE + (targetSlotIndex * SLOT_SIZE);
-      const destinationOffset = sourceOffset + SLOT_SIZE;
-      const bytesToShift = (slotCount - targetSlotIndex) * SLOT_SIZE;
-
-      // Safe overlapping block memory shift inside the native buffer
-      pageBuffer.copy(pageBuffer, destinationOffset, sourceOffset, sourceOffset + bytesToShift);
+  /**
+   * Evaluates a search key against the internal node routing table
+   * to determine the exact child Page ID that must be traversed next.
+   */
+  routeToChildPage(searchKey: Buffer): number {
+    const slotCount = this.getSlotCount();
+    if (slotCount === 0) {
+      return this.getLeftmostChildId();
     }
 
-    // 4. Write coordinates into the newly created slot gap
-    const targetSlotOffset = HEADER_SIZE + (targetSlotIndex * SLOT_SIZE);
-    pageBuffer.writeUInt16BE(newFreeSpacePointer, targetSlotOffset);
-    pageBuffer.writeUInt16BE(rowBuffer.length, targetSlotOffset + 2);
+    // Run interval binary search to find boundaries
+    const searchParams = { key: searchKey, manager: this };
+    const searchResult = PageManager.search.run(slotCount, searchParams);
 
-    // 5. Commit structural header changes
-    this.setSlotCount(slotCount + 1);
-    this.setFreeSpacePointer(newFreeSpacePointer);
-    // this.markDirty(); // Done above
+    // Direct hit found on a routing partition boundary key
+    if (searchResult > -1) {
+      const rowBuffer = this.getRow(searchResult)!;
+      const fields = deserializeRow(rowBuffer);
+      if (!fields[1]) {
+        throw new ControlledError('FIELD_NOT_FOUND');
+      }
 
-    return targetSlotIndex;
+      return fields[1].readUInt32BE(0);
+    }
+
+    // Interval Invariant Match:
+    // If PageManager.search.low remains -1, our search key is strictly smaller
+    // than the smallest routing key on this page. Route to Leftmost Child.
+    if (PageManager.search.low === -1) {
+      return this.getLeftmostChildId();
+    }
+
+    // Otherwise, low points to the closest routing key that is smaller than or equal
+    // to our search key. Follow its corresponding right-hand child page ID pointer.
+    const rowBuffer = this.getRow(PageManager.search.low);
+    if (!rowBuffer) {
+      throw new ControlledError('FIELD_NOT_FOUND');
+    }
+    const fields = deserializeRow(rowBuffer);
+    if (!fields[1]) {
+      throw new ControlledError('FIELD_NOT_FOUND');
+    }
+    return fields[1].readUInt32BE(0);
+  }
+
+  /**
+   * Inserts a routing key and its associated right-hand child page ID
+   * into an internal routing node, keeping entries strictly sorted.
+   */
+  insertRoutingKey(key: Buffer, childPageId: number): number {
+    // 1. Serialize the 4-byte UInt32 child pointer to a raw buffer
+    const pointerBuffer = Buffer.alloc(4);
+    pointerBuffer.writeUInt32BE(childPageId, 0);
+
+    // 2. Pack key and pointer into a standard database row tuple
+    const routingRow = serializeRow([key, pointerBuffer]);
+
+    // 3. Utilize your interval binary search to determine the insertion slot
+    const slotCount = this.getSlotCount();
+    const searchParams = { key, manager: this };
+    const searchResult = PageManager.search.run(slotCount, searchParams);
+
+    // B+ Tree Internal Nodes can update pointer mappings if a duplicate routing key is inserted
+    if (searchResult > -1) {
+      // Direct hit: Overwrite the existing routing slot with the updated child path
+      this.updateRowFixed(searchResult, routingRow);
+      return searchResult;
+    } else {
+      // 4. Perform regular sorted insertion using the calculated high boundary index
+      const targetSlotIndex = PageManager.search.high;
+      this.requestAvailableSpace(routingRow.length);
+      return this.addRecord(targetSlotIndex, routingRow);
+    }
+  }
+
+  /**
+   * Performs an O(log N) point-lookup search for a unique key on this page.
+   * Returns the raw record Buffer slice if found, or null if the key does not exist.
+   */
+  findKey(key: Buffer): Buffer | null {
+    const slotCount = this.getSlotCount();
+    if (slotCount === 0) {
+      return null;
+    }
+
+    const searchParams = { key, manager: this };
+
+    // Execute your zero-allocation interval binary search
+    const searchResult = PageManager.search.run(slotCount, searchParams);
+
+    // Direct hit: The key exists exactly at the index returned by searchResult
+    if (searchResult > -1) {
+      return this.getRow(searchResult);
+    }
+
+    // Interval Invariant Match: Key was not found on this page
+    return null;
   }
 }

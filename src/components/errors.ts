@@ -5,7 +5,10 @@ export const REASON = {
   TABLE_NOT_FOUND: 'Could not find this table in pager',
   PAGE_WAS_NOT_CREATED: 'Page was not created',
   PAGE_MANAGER_EMPTY: 'PageManager is empty. Set buffer first.',
-  DUPLICATE_RECORD_ID: 'Record ID ${id} already exists'
+  DUPLICATE_RECORD_ID: 'Record ID ${id} already exists',
+  FIELD_NOT_FOUND: 'Required field not found',
+  RECORD_NOT_FOUND: 'Required record not found',
+  SIZE_DOES_NOT_MATCH: 'Source row length (${source}) should be equal to target (${target})',
 };
 
 type Reason = keyof typeof REASON;
@@ -23,7 +26,7 @@ export class ControlledError extends Error {
     return this.check(error) && error.reason === reason;
   }
 
-  constructor(reason: Reason, data: Record<string, string> = {}) {
+  constructor(reason: Reason, data: Record<string, string | number> = {}) {
     super(template(REASON[reason], data));
     this.reason = reason;
   }
