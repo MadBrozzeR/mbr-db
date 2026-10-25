@@ -25,6 +25,7 @@ export class Database {
     await this.pagePool.setPager(tableName, targetFilePath);
 
     const accessor = new TableAccessor(tableName, this.pagePool);
+    await accessor.init();
     this.tables.set(tableName, accessor);
     return accessor;
   }

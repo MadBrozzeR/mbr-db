@@ -1,6 +1,6 @@
 import { CacheFrame } from './buffer-pool';
-import { PAGE_SIZE, HEADER_SIZE, SLOT_SIZE, PAGE_HEADER_MASK, PageType, SLOT_COUNT_OFFSET, FREE_SPACE_POINTER_OFFSET, DELETET_BYTES_OFFSET, NEXT_PAGE_ID_OFFSET, NEXT_PAGE_ID_SIZE } from '../constants';
-import { deserializeRow, serializeRow } from '../utils/buffer-utils';
+import { SIZE, OFFSET, PageType, PAGE_HEADER_MASK, PAGE_TYPE } from '../constants';
+import { deserializeRow, getChildId, serializeRow } from '../utils/buffer-utils';
 import { BinarySearch } from '../utils/math-utils';
 import { AppError } from '../utils/errors';
 import { assertPageType } from '../utils/type-utils';
@@ -22,7 +22,7 @@ export class Slot {
   }
 
   getOffset() {
-    return HEADER_SIZE + this.index * SLOT_SIZE;
+    return SIZE.HEADER + this.index * SIZE.SLOT;
   }
 
   hasData() {
@@ -72,12 +72,12 @@ export class PageManager {
    */
   setLeftmostChildId(pageId: Buffer | number): void {
     if (typeof pageId === 'number') {
-      this.getBuffer().writeUInt32BE(pageId, NEXT_PAGE_ID_OFFSET);
+      this.getBuffer().writeUInt32BE(pageId, OFFSET.NEXT_PAGE_ID);
     } else {
       if (pageId.length !== 4) {
-        throw new AppError('WRONG_INTERNAL_TREE_KEY', { size: pageId.length });
+        throw new AppError('WRONG_FIELD_SIZE', { size: pageId.length, required: 4 });
       }
-      pageId.copy(this.getBuffer(), NEXT_PAGE_ID_OFFSET, 0, NEXT_PAGE_ID_SIZE);
+      pageId.copy(this.getBuffer(), OFFSET.NEXT_PAGE_ID, 0, OFFSET.NEXT_PAGE_ID);
     }
     this.markDirty();
   }
@@ -97,9 +97,9 @@ export class PageManager {
     buffer.fill(0); // Clean slate
     buffer.writeUInt8(pageType, 0);                              // page_type
     buffer.writeUInt8(0, 1);                                     // reserved
-    buffer.writeUInt16BE(0, SLOT_COUNT_OFFSET);                  // slot_count
-    buffer.writeUInt16BE(PAGE_SIZE, FREE_SPACE_POINTER_OFFSET);  // free_space_pointer (starts at 4096)
-    buffer.writeUInt16BE(0, DELETET_BYTES_OFFSET);               // deleted_bytes
+    buffer.writeUInt16BE(0, OFFSET.SLOT_COUNT);                  // slot_count
+    buffer.writeUInt16BE(SIZE.PAGE, OFFSET.FREE_SPACE_POINTER);  // free_space_pointer (starts at 4096)
+    buffer.writeUInt16BE(0, OFFSET.DELETET_BYTES);               // deleted_bytes
     // this.setNextPageId(nextPageId);                           // next_page_id
     this.markDirty();
   }
@@ -117,7 +117,7 @@ export class PageManager {
   // --- Header Getters & Setters ---
   getPageType(): PageType { return assertPageType(this.getBuffer().readUInt8(0) & PAGE_HEADER_MASK.TYPE_MASK); }
   getSlotCount(): number { return this.getBuffer().readUInt16BE(2); }
-  getSlotOffset(index: number) { return HEADER_SIZE + index * SLOT_SIZE; }
+  getSlotOffset(index: number) { return SIZE.HEADER + index * SIZE.SLOT; }
   getFreeSpacePointer(): number { return this.getBuffer().readUInt16BE(4); }
   getDeletedBytes(): number { return this.getBuffer().readUInt16BE(6); }
   getNextPageId(): number { return this.getBuffer().readUInt32BE(8); }
@@ -127,37 +127,16 @@ export class PageManager {
   private setDeletedBytes(value: number) { this.getBuffer().writeUInt16BE(value, 6); this.markDirty(); }
   setRootPage(value: boolean) { this.setBit(0, PAGE_HEADER_MASK.IS_ROOT, value); }
 
-//   getRealSlotCount() {
-//     const slotCount = this.getSlotCount();
-//     const buffer = this.getBuffer();
-// 
-//     if (this.getDeletedBytes() === 0) {
-//       return slotCount;
-//     }
-// 
-//     let count = 0;
-//     for (let index = 0 ; index < slotCount ; ++index) {
-//       const slotOffset = this.getSlotOffset(index);
-//       const dataOffset = buffer.readUInt16BE(slotOffset);
-// 
-//       if (dataOffset !== 0) {
-//         count++;
-//       }
-//     }
-// 
-//     return count;
-//   }
-
   findMiddleSlotIndex() {
     const buffer = this.getBuffer();
     const slotCount = this.getSlotCount();
     const indexes: number[] = [];
-    let currentOffset = HEADER_SIZE;
+    let currentOffset = SIZE.HEADER;
     for (let index = 0 ; index < slotCount ; ++index) {
       if (buffer.readUInt16BE(currentOffset) !== 0) {
         indexes.push(index);
       }
-      currentOffset += SLOT_SIZE;
+      currentOffset += SIZE.SLOT;
     }
     return indexes[indexes.length >> 1] || -1;
   }
@@ -175,7 +154,7 @@ export class PageManager {
    */
   getAvailableFreeSpace(): number {
     const slotCount = this.getSlotCount();
-    const currentSlotEnd = HEADER_SIZE + (slotCount * SLOT_SIZE);
+    const currentSlotEnd = this.getSlotOffset(slotCount);
     const freeSpacePointer = this.getFreeSpacePointer();
 
     // Contiguous space between the slot array end and the last data payload
@@ -198,7 +177,7 @@ export class PageManager {
   }
 
   private requestAvailableSpace(bufferSize: number) {
-    const requiredSpace = SLOT_SIZE + bufferSize;
+    const requiredSpace = SIZE.SLOT + bufferSize;
     const available = this.getAvailableFreeSpace();
 
     if (available < requiredSpace) {
@@ -219,16 +198,16 @@ export class PageManager {
 
     // 3. Shift the 4-byte slot pointers to open up a vacant position
     if (slotIndex < slotCount) {
-      const sourceOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
-      const destinationOffset = sourceOffset + SLOT_SIZE;
-      const bytesToShift = (slotCount - slotIndex) * SLOT_SIZE;
+      const sourceOffset = this.getSlotOffset(slotIndex);
+      const destinationOffset = sourceOffset + SIZE.SLOT;
+      const bytesToShift = (slotCount - slotIndex) * SIZE.SLOT;
 
       // Safe overlapping block memory shift inside the native buffer
       pageBuffer.copy(pageBuffer, destinationOffset, sourceOffset, sourceOffset + bytesToShift);
     }
 
     // 4. Write coordinates into the newly created slot gap
-    const targetSlotOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
+    const targetSlotOffset = this.getSlotOffset(slotIndex);
     pageBuffer.writeUInt16BE(newFreeSpacePointer, targetSlotOffset);
     pageBuffer.writeUInt16BE(rowBuffer.length, targetSlotOffset + 2);
 
@@ -256,7 +235,7 @@ export class PageManager {
     const buffer = this.getBuffer();
     if (slotIndex < 0 || slotIndex >= this.getSlotCount()) return null;
 
-    const slotOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
+    const slotOffset = this.getSlotOffset(slotIndex);
     const offset = buffer.readUInt16BE(slotOffset);
     const length = buffer.readUInt16BE(slotOffset + 2);
 
@@ -269,7 +248,7 @@ export class PageManager {
 
   updateRowFixed(slotIndex: number, rowBuffer: Buffer) {
     const buffer = this.getBuffer();
-    const slotOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
+    const slotOffset = this.getSlotOffset(slotIndex);
     const offset = buffer.readUInt16BE(slotOffset);
     const currentData = this.getRow(slotIndex);
 
@@ -293,7 +272,7 @@ export class PageManager {
     const buffer = this.getBuffer();
     if (slotIndex < 0 || slotIndex >= this.getSlotCount()) return false;
 
-    const slotOffset = HEADER_SIZE + (slotIndex * SLOT_SIZE);
+    const slotOffset = this.getSlotOffset(slotIndex);
     const offset = buffer.readUInt16BE(slotOffset);
     const length = buffer.readUInt16BE(slotOffset + 2);
 
@@ -303,7 +282,7 @@ export class PageManager {
     buffer.writeUInt32BE(0, slotOffset);
 
     // Add this to our fragmentation counter
-    this.setDeletedBytes(this.getDeletedBytes() + length + SLOT_SIZE);
+    this.setDeletedBytes(this.getDeletedBytes() + length + SIZE.SLOT);
     this.markDirty();
     return true;
   }
@@ -313,12 +292,12 @@ export class PageManager {
    */
   defragment(): void {
     const slotCount = this.getSlotCount();
-    const tempBuffer = Buffer.alloc(PAGE_SIZE);
-    let tempPointer = PAGE_SIZE;
+    const tempBuffer = Buffer.alloc(SIZE.PAGE);
+    let tempPointer = SIZE.PAGE;
     const pageBuffer = this.getBuffer();
     let newSlotCount = 0;
-    let slotOffset = HEADER_SIZE;
-    let newSlotOffset = HEADER_SIZE;
+    let slotOffset = SIZE.HEADER;
+    let newSlotOffset = SIZE.HEADER;
 
     for (let index = 0; index < slotCount; ++index) {
       const offset = pageBuffer.readUInt16BE(slotOffset);
@@ -330,15 +309,15 @@ export class PageManager {
 
         pageBuffer.writeUInt16BE(tempPointer, newSlotOffset);
         pageBuffer.writeUInt16BE(length, newSlotOffset + 2);
-        newSlotOffset += SLOT_SIZE;
+        newSlotOffset += SIZE.SLOT;
         ++newSlotCount;
       }
-      slotOffset += SLOT_SIZE;
+      slotOffset += SIZE.SLOT;
     }
 
     pageBuffer.fill(0, newSlotOffset, tempPointer);
-    tempBuffer.copy(pageBuffer, tempPointer, tempPointer, PAGE_SIZE);
-    tempBuffer.copy(pageBuffer, HEADER_SIZE, HEADER_SIZE, newSlotOffset);
+    tempBuffer.copy(pageBuffer, tempPointer, tempPointer, SIZE.PAGE);
+    tempBuffer.copy(pageBuffer, SIZE.HEADER, SIZE.HEADER, newSlotOffset);
     this.setFreeSpacePointer(tempPointer);
     this.setDeletedBytes(0);
     this.setSlotCount(newSlotCount);
@@ -359,13 +338,27 @@ export class PageManager {
     return fields[0] || null;
   }
 
+  insertRowOrSortingKey(rowBuffer: Buffer, key: Buffer) {
+    const type = this.getPageType();
+    switch (type) {
+      case PAGE_TYPE.TREE_LEAF:
+        this.insertSortedRow(rowBuffer, key);
+        break;
+      case PAGE_TYPE.TREE_INTERNAL:
+        this.insertRoutingKey(key, rowBuffer);
+        break;
+      default:
+        throw new AppError('PAGE_TYPE_UNHANDLED', { type });
+    }
+  }
+
   /**
    * Inserts a record and maintains strict sorting inside the slot array.
    */
-  insertSortedRow(rowBuffer: Buffer): number {
+  insertSortedRow(rowBuffer: Buffer, key?: Buffer): number {
     this.requestAvailableSpace(rowBuffer.length);
 
-    const newKey = deserializeRow(rowBuffer, 1)[0];
+    const newKey = key || deserializeRow(rowBuffer, 1)[0];
     if (!newKey) {
       throw new Error("Cannot insert into sorted page: Row is missing an index key in Field 0.");
     }
@@ -433,10 +426,9 @@ export class PageManager {
    * Inserts a routing key and its associated right-hand child page ID
    * into an internal routing node, keeping entries strictly sorted.
    */
-  insertRoutingKey(key: Buffer, childPageId: number): number {
+  insertRoutingKey(key: Buffer, childPageId: number | Buffer): number {
     // 1. Serialize the 4-byte UInt32 child pointer to a raw buffer
-    const pointerBuffer = Buffer.alloc(4);
-    pointerBuffer.writeUInt32BE(childPageId, 0);
+    const pointerBuffer = getChildId(childPageId);
 
     // 2. Pack key and pointer into a standard database row tuple
     const routingRow = serializeRow([key, pointerBuffer]);

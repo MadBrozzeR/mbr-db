@@ -12,9 +12,10 @@ export const REASON = {
   SIZE_DOES_NOT_MATCH: 'Source row length (${source}) should be equal to target (${target})',
   PAGE_NOT_FOUND: 'Page ${pageId} not found in "${table}" table',
   CANNOT_SPLIT_INTERNAL: 'Cannot split internal tree page with one or no records',
-  WRONG_INTERNAL_TREE_KEY: 'Internal tree splitKey has wrong size (${size} instead of 4)',
+  WRONG_FIELD_SIZE: 'Provided field has wrong size (${size} instead of ${required})',
   TREE_DEPTH_EXCEEDED: 'Tree depth exeeded. Maximum depth is ${depth}',
   ROOT_SPLIT_FAILED: 'Boundary split requires a clean promotion key',
+  PAGE_TYPE_UNHANDLED: 'Cannot handle page type "${type}"',
 };
 
 type Reason = keyof typeof REASON;

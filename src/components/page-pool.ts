@@ -1,7 +1,7 @@
 import { BufferPool } from './buffer-pool';
 import { PageManager } from './page-manager';
 import { Pager } from './pager';
-import { DEFAULT_POOL_COUNT, PAGE_TYPE } from '../constants';
+import { DEFAULT_POOL_COUNT, PAGE_TYPE, PageType } from '../constants';
 import { AppError } from '../utils/errors';
 
 export class PagePool {
@@ -35,39 +35,28 @@ export class PagePool {
 
   async getPage(table: string, index: number) {
     const frame = await this.bufferPool.getFrame(table, index);
-    return frame && this.pageManager.setTarget(frame.buffer, frame);
+    const manager = frame && this.pageManager.setTarget(frame.buffer, frame);
+    if (!manager) {
+      throw new AppError('PAGE_NOT_FOUND', { pageId: index, table });
+    }
+    return manager;
   }
 
-  async *iterate(table: string) {
-    const totalPages = this.bufferPool.getTotalPages(table);
+//   async *iterate(table: string) {
+//     const totalPages = this.bufferPool.getTotalPages(table);
+// 
+//     for (let index = 0 ; index < totalPages ; ++index) {
+//       const pageManager = await this.getPage(table, index);
+//       yield { pageManager, id: index };
+//     }
+//   }
 
-    for (let index = 0 ; index < totalPages ; ++index) {
-      const pageManager = await this.getPage(table, index);
-      if (pageManager) {
-        yield { pageManager, id: index };
-      }
-    }
-  }
-
-  async allocatePage(table: string) {
-    const pager = this.pagers[table];
-    if (!pager) {
-      throw new AppError('TABLE_NOT_FOUND');
-    }
-    const lastPageIndex = pager.getTotalPages() - 1;
-    const lastPage = lastPageIndex < 0 ? null : await this.getPage(table, lastPageIndex);
+  async allocatePage(table: string, pageType: PageType = PAGE_TYPE.TREE_LEAF) {
+    const pager = this.getPager(table);
     const newPageId = await pager.allocatePage();
     const pageManager = await this.getPage(table, newPageId);
 
-    if (!pageManager) {
-      throw new AppError('PAGE_WAS_NOT_CREATED');
-    }
-
-    pageManager.init(PAGE_TYPE.TREE_LEAF);
-
-    if (lastPage) {
-      lastPage.setNextPageId(newPageId);
-    }
+    pageManager.init(pageType);
 
     return { pageManager, id: newPageId };
   }
@@ -80,16 +69,22 @@ export class PagePool {
     return this.bufferPool.flushAll();
   };
 
-  async open(table: string) {
-    if (this.openPagers[table]) {
-      return this.openPagers[table];
-    }
-
+  getPager(table: string) {
     const pager = this.pagers[table];
 
     if (!pager) {
       throw new AppError('TABLE_NOT_FOUND', { table });
     }
+
+    return pager;
+  }
+
+  async open(table: string) {
+    if (this.openPagers[table]) {
+      return this.openPagers[table];
+    }
+
+    const pager = this.getPager(table);
 
     return (this.openPagers[table] = await pager.open());
   }
@@ -101,5 +96,10 @@ export class PagePool {
     }
     await Promise.all(promises);
     this.openPagers = {};
+  }
+
+  // PLACEHOLDER
+  async updateRootPageId(table: string, id: number) {
+    console.log(table, id);
   }
 }

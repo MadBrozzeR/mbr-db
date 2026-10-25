@@ -1,3 +1,5 @@
+import { AppError } from './errors';
+
 /**
  * Deserializes a single isolated row chunk.
  * Returns an array where each item is either a Buffer (present) or null (missing entirely).
@@ -93,4 +95,26 @@ export function serializeRow(fields: Array<Buffer | null>): Buffer {
   }
 
   return Buffer.concat(chunks, totalLength);
+}
+
+export function getKeyFromRow(rowBuffer: Buffer) {
+  const key = deserializeRow(rowBuffer, 1)[0];
+  if (!key) {
+    throw new AppError('KEY_NOT_FOUND');
+  }
+  return key;
+}
+
+export function getChildId (id: number | Buffer) {
+  if (typeof id === 'number') {
+    const buffer = Buffer.allocUnsafe(4);
+    buffer.writeUInt32BE(id);
+    return buffer;
+  }
+
+  if (id.length !== 4) {
+    throw new AppError('WRONG_FIELD_SIZE', { size: id.length, required: 4 });
+  }
+
+  return id;
 }
