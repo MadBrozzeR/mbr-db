@@ -1,7 +1,19 @@
 export const PAGE_SIZE = 4096;
-export const HEADER_SIZE = 12;
+export const PAGE_TYPE_BITMAP_SIZE = 2;
+export const SLOT_COUNT_SIZE = 2;
+export const FREE_SPACE_POINTER_SIZE = 2;
+export const DELETET_BYTES_SIZE = 2;
+export const NEXT_PAGE_ID_SIZE = 4;
 export const SLOT_SIZE = 4;
+
+export const SLOT_COUNT_OFFSET = PAGE_TYPE_BITMAP_SIZE;
+export const FREE_SPACE_POINTER_OFFSET = SLOT_COUNT_OFFSET + SLOT_COUNT_SIZE;
+export const DELETET_BYTES_OFFSET = FREE_SPACE_POINTER_OFFSET + FREE_SPACE_POINTER_SIZE;
+export const NEXT_PAGE_ID_OFFSET = DELETET_BYTES_OFFSET + DELETET_BYTES_SIZE;
+export const HEADER_SIZE = NEXT_PAGE_ID_OFFSET + NEXT_PAGE_ID_SIZE;
+
 export const DEFAULT_POOL_COUNT = 20;
+
 export const PAGE_TYPE = {
   META: 0,
   TREE_LEAF: 1,
@@ -14,3 +26,5 @@ export const PAGE_HEADER_MASK = {
   IS_ROOT: 0b10000000,
   IS_COMPACT: 0b01000000,
 };
+
+export type PageType = (typeof PAGE_TYPE)[keyof typeof PAGE_TYPE];

@@ -1,5 +1,5 @@
-import { ControlledError } from './errors';
 import { Pager } from './pager';
+import { AppError } from '../utils/errors';
 
 export interface CacheFrame {
   table: string;
@@ -130,7 +130,7 @@ export class BufferPool {
   getTotalPages(table: string) {
     const pager = this.pagers.get(table);
     if (!pager) {
-      throw new ControlledError('TABLE_NOT_FOUND');
+      throw new AppError('TABLE_NOT_FOUND');
     }
     return pager.getTotalPages();
   }

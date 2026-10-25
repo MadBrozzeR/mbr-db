@@ -1,11 +1,38 @@
-import { PAGE_SIZE, HEADER_SIZE, SLOT_SIZE, PAGE_HEADER_MASK, PAGE_TYPE } from '../constants';
+import { CacheFrame } from './buffer-pool';
+import { PAGE_SIZE, HEADER_SIZE, SLOT_SIZE, PAGE_HEADER_MASK, PageType, SLOT_COUNT_OFFSET, FREE_SPACE_POINTER_OFFSET, DELETET_BYTES_OFFSET, NEXT_PAGE_ID_OFFSET, NEXT_PAGE_ID_SIZE } from '../constants';
 import { deserializeRow, serializeRow } from '../utils/buffer-utils';
 import { BinarySearch } from '../utils/math-utils';
-import { CacheFrame } from './buffer-pool';
-import { ControlledError } from './errors';
+import { AppError } from '../utils/errors';
+import { assertPageType } from '../utils/type-utils';
 
 type BinarySearchParams = { key: Buffer; manager: PageManager };
 const DEFAULT_BUFFER = Buffer.alloc(0);
+
+export class Slot {
+  index = 0;
+  private pageManager: PageManager;
+
+  constructor(pageManager: PageManager) {
+    this.pageManager = pageManager;
+  }
+
+  setIndex(value: number) {
+    this.index = value;
+    return this;
+  }
+
+  getOffset() {
+    return HEADER_SIZE + this.index * SLOT_SIZE;
+  }
+
+  hasData() {
+    return this.pageManager.getBuffer().readUInt16BE(this.getOffset()) !== 0;
+  }
+
+  getRow() {
+    return this.pageManager.getRow(this.index);
+  }
+}
 
 export class PageManager {
   private pageBuffer: Buffer;
@@ -18,6 +45,7 @@ export class PageManager {
 
     return params.key.compare(currentKey);
   });
+  private slot = new Slot(this);
 
   constructor(pageBuffer?: Buffer, cacheFrame?: CacheFrame | null) {
     this.pageBuffer = pageBuffer || DEFAULT_BUFFER;
@@ -42,8 +70,16 @@ export class PageManager {
    * Sets the Leftmost Child Pointer for internal routing nodes.
    * Reuses the next_page_id header slot (Bytes 8-11).
    */
-  setLeftmostChildId(pageId: number): void {
-    this.setNextPageId(pageId);
+  setLeftmostChildId(pageId: Buffer | number): void {
+    if (typeof pageId === 'number') {
+      this.getBuffer().writeUInt32BE(pageId, NEXT_PAGE_ID_OFFSET);
+    } else {
+      if (pageId.length !== 4) {
+        throw new AppError('WRONG_INTERNAL_TREE_KEY', { size: pageId.length });
+      }
+      pageId.copy(this.getBuffer(), NEXT_PAGE_ID_OFFSET, 0, NEXT_PAGE_ID_SIZE);
+    }
+    this.markDirty();
   }
 
   /**
@@ -56,16 +92,16 @@ export class PageManager {
   /**
    * Formats a raw blank buffer with baseline database metadata headers.
    */
-  init(pageType: (typeof PAGE_TYPE)[keyof typeof PAGE_TYPE]): void {
+  init(pageType: PageType): void {
     const buffer = this.getBuffer();
     buffer.fill(0); // Clean slate
-    buffer.writeUInt8(pageType, 0);       // page_type
-    buffer.writeUInt8(0, 1);       // reserved
-    buffer.writeUInt16BE(0, 2);              // slot_count
-    buffer.writeUInt16BE(PAGE_SIZE, 4);      // free_space_pointer (starts at 4096)
-    buffer.writeUInt16BE(0, 6);              // deleted_bytes
-    // this.setNextPageId(nextPageId);                   // next_page_id
-    this.markDirty(); // no need in making it dirty, because setNextPageId already done it.
+    buffer.writeUInt8(pageType, 0);                              // page_type
+    buffer.writeUInt8(0, 1);                                     // reserved
+    buffer.writeUInt16BE(0, SLOT_COUNT_OFFSET);                  // slot_count
+    buffer.writeUInt16BE(PAGE_SIZE, FREE_SPACE_POINTER_OFFSET);  // free_space_pointer (starts at 4096)
+    buffer.writeUInt16BE(0, DELETET_BYTES_OFFSET);               // deleted_bytes
+    // this.setNextPageId(nextPageId);                           // next_page_id
+    this.markDirty();
   }
 
   private setBit(byteIndex: number, mask: number, isSet = true) {
@@ -79,8 +115,9 @@ export class PageManager {
   }
 
   // --- Header Getters & Setters ---
-  getPageType(): number { return this.getBuffer().readUInt8(0) & PAGE_HEADER_MASK.TYPE_MASK; }
+  getPageType(): PageType { return assertPageType(this.getBuffer().readUInt8(0) & PAGE_HEADER_MASK.TYPE_MASK); }
   getSlotCount(): number { return this.getBuffer().readUInt16BE(2); }
+  getSlotOffset(index: number) { return HEADER_SIZE + index * SLOT_SIZE; }
   getFreeSpacePointer(): number { return this.getBuffer().readUInt16BE(4); }
   getDeletedBytes(): number { return this.getBuffer().readUInt16BE(6); }
   getNextPageId(): number { return this.getBuffer().readUInt32BE(8); }
@@ -89,6 +126,49 @@ export class PageManager {
   private setFreeSpacePointer(value: number) { this.getBuffer().writeUInt16BE(value, 4); this.markDirty(); }
   private setDeletedBytes(value: number) { this.getBuffer().writeUInt16BE(value, 6); this.markDirty(); }
   setRootPage(value: boolean) { this.setBit(0, PAGE_HEADER_MASK.IS_ROOT, value); }
+
+//   getRealSlotCount() {
+//     const slotCount = this.getSlotCount();
+//     const buffer = this.getBuffer();
+// 
+//     if (this.getDeletedBytes() === 0) {
+//       return slotCount;
+//     }
+// 
+//     let count = 0;
+//     for (let index = 0 ; index < slotCount ; ++index) {
+//       const slotOffset = this.getSlotOffset(index);
+//       const dataOffset = buffer.readUInt16BE(slotOffset);
+// 
+//       if (dataOffset !== 0) {
+//         count++;
+//       }
+//     }
+// 
+//     return count;
+//   }
+
+  findMiddleSlotIndex() {
+    const buffer = this.getBuffer();
+    const slotCount = this.getSlotCount();
+    const indexes: number[] = [];
+    let currentOffset = HEADER_SIZE;
+    for (let index = 0 ; index < slotCount ; ++index) {
+      if (buffer.readUInt16BE(currentOffset) !== 0) {
+        indexes.push(index);
+      }
+      currentOffset += SLOT_SIZE;
+    }
+    return indexes[indexes.length >> 1] || -1;
+  }
+
+  *iterateSlots(start = 0) {
+    const slotCount = this.getSlotCount();
+
+    for (let index = start ; index < slotCount ; ++index) {
+      yield this.slot.setIndex(index);
+    }
+  }
 
   /**
    * Calculates how much space is left for new rows before triggering a split.
@@ -123,7 +203,7 @@ export class PageManager {
 
     if (available < requiredSpace) {
       if ((available + this.getDeletedBytes()) < requiredSpace) {
-        throw new ControlledError('PAGE_OUT_OF_SPACE');
+        throw new AppError('PAGE_OUT_OF_SPACE');
       }
       // If we have fragmentation, try defragmenting first
       this.defragment();
@@ -194,10 +274,10 @@ export class PageManager {
     const currentData = this.getRow(slotIndex);
 
     if (!currentData) {
-      throw new ControlledError('RECORD_NOT_FOUND');
+      throw new AppError('RECORD_NOT_FOUND');
     }
     if (rowBuffer.length !== currentData.length) {
-      throw new ControlledError('SIZE_DOES_NOT_MATCH', { source: currentData.length, target: rowBuffer.length });
+      throw new AppError('SIZE_DOES_NOT_MATCH', { source: currentData.length, target: rowBuffer.length });
     }
     if (currentData.compare(rowBuffer) === 0) {
       return;
@@ -223,7 +303,7 @@ export class PageManager {
     buffer.writeUInt32BE(0, slotOffset);
 
     // Add this to our fragmentation counter
-    this.setDeletedBytes(this.getDeletedBytes() + length);
+    this.setDeletedBytes(this.getDeletedBytes() + length + SLOT_SIZE);
     this.markDirty();
     return true;
   }
@@ -233,14 +313,14 @@ export class PageManager {
    */
   defragment(): void {
     const slotCount = this.getSlotCount();
-    // Temporary buffer to stage clean, consecutive payloads
     const tempBuffer = Buffer.alloc(PAGE_SIZE);
     let tempPointer = PAGE_SIZE;
     const pageBuffer = this.getBuffer();
+    let newSlotCount = 0;
+    let slotOffset = HEADER_SIZE;
+    let newSlotOffset = HEADER_SIZE;
 
-    // Loop through slots to pack valid data rows into temp storage
     for (let index = 0; index < slotCount; ++index) {
-      const slotOffset = HEADER_SIZE + (index * SLOT_SIZE);
       const offset = pageBuffer.readUInt16BE(slotOffset);
       const length = pageBuffer.readUInt16BE(slotOffset + 2);
 
@@ -248,16 +328,21 @@ export class PageManager {
         tempPointer -= length;
         pageBuffer.copy(tempBuffer, tempPointer, offset, offset + length);
 
-        // Rewrite active slot with its updated layout coordinates
-        pageBuffer.writeUInt16BE(tempPointer, slotOffset);
+        pageBuffer.writeUInt16BE(tempPointer, newSlotOffset);
+        pageBuffer.writeUInt16BE(length, newSlotOffset + 2);
+        newSlotOffset += SLOT_SIZE;
+        ++newSlotCount;
       }
+      slotOffset += SLOT_SIZE;
     }
 
-    // Flush packed rows back onto our page frame
+    pageBuffer.fill(0, newSlotOffset, tempPointer);
     tempBuffer.copy(pageBuffer, tempPointer, tempPointer, PAGE_SIZE);
+    tempBuffer.copy(pageBuffer, HEADER_SIZE, HEADER_SIZE, newSlotOffset);
     this.setFreeSpacePointer(tempPointer);
-    this.setDeletedBytes(0); // All fragmented space reclaimed!
-    this.markDirty();
+    this.setDeletedBytes(0);
+    this.setSlotCount(newSlotCount);
+    // this.markDirty();
   }
 
   /**
@@ -291,7 +376,7 @@ export class PageManager {
     let targetSlotIndex = PageManager.search.run(slotCount, searcParams);
 
     if (targetSlotIndex !== -1) {
-      throw new ControlledError('DUPLICATE_RECORD_ID', { id: `<${newKey.toString('hex')}>` });
+      throw new AppError('DUPLICATE_RECORD_ID', { id: `<${newKey.toString('hex')}>` });
     }
 
     targetSlotIndex = PageManager.search.high;
@@ -318,7 +403,7 @@ export class PageManager {
       const rowBuffer = this.getRow(searchResult)!;
       const fields = deserializeRow(rowBuffer);
       if (!fields[1]) {
-        throw new ControlledError('FIELD_NOT_FOUND');
+        throw new AppError('FIELD_NOT_FOUND');
       }
 
       return fields[1].readUInt32BE(0);
@@ -335,11 +420,11 @@ export class PageManager {
     // to our search key. Follow its corresponding right-hand child page ID pointer.
     const rowBuffer = this.getRow(PageManager.search.low);
     if (!rowBuffer) {
-      throw new ControlledError('FIELD_NOT_FOUND');
+      throw new AppError('FIELD_NOT_FOUND');
     }
     const fields = deserializeRow(rowBuffer);
     if (!fields[1]) {
-      throw new ControlledError('FIELD_NOT_FOUND');
+      throw new AppError('FIELD_NOT_FOUND');
     }
     return fields[1].readUInt32BE(0);
   }
@@ -396,5 +481,9 @@ export class PageManager {
 
     // Interval Invariant Match: Key was not found on this page
     return null;
+  }
+
+  clone() {
+    return new PageManager(this.pageBuffer, this.cacheFrame);
   }
 }

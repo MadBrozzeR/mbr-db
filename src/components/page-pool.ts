@@ -1,8 +1,8 @@
-import { DEFAULT_POOL_COUNT, PAGE_TYPE } from '../constants';
 import { BufferPool } from './buffer-pool';
-import { ControlledError } from './errors';
 import { PageManager } from './page-manager';
 import { Pager } from './pager';
+import { DEFAULT_POOL_COUNT, PAGE_TYPE } from '../constants';
+import { AppError } from '../utils/errors';
 
 export class PagePool {
   bufferPool: BufferPool;
@@ -52,7 +52,7 @@ export class PagePool {
   async allocatePage(table: string) {
     const pager = this.pagers[table];
     if (!pager) {
-      throw new ControlledError('TABLE_NOT_FOUND');
+      throw new AppError('TABLE_NOT_FOUND');
     }
     const lastPageIndex = pager.getTotalPages() - 1;
     const lastPage = lastPageIndex < 0 ? null : await this.getPage(table, lastPageIndex);
@@ -60,7 +60,7 @@ export class PagePool {
     const pageManager = await this.getPage(table, newPageId);
 
     if (!pageManager) {
-      throw new ControlledError('PAGE_WAS_NOT_CREATED');
+      throw new AppError('PAGE_WAS_NOT_CREATED');
     }
 
     pageManager.init(PAGE_TYPE.TREE_LEAF);
@@ -88,7 +88,7 @@ export class PagePool {
     const pager = this.pagers[table];
 
     if (!pager) {
-      throw new ControlledError('TABLE_NOT_FOUND');
+      throw new AppError('TABLE_NOT_FOUND', { table });
     }
 
     return (this.openPagers[table] = await pager.open());

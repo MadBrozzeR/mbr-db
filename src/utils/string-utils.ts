@@ -1,4 +1,4 @@
-const KEY_RE = /\$\{(-\w+)\}/g;
+const KEY_RE = /\$\{([-\w]+)\}/g;
 
 export function template (text: string, substitutions: Record<string, string | number>) {
   return text.replace(KEY_RE, function (source, key) {
