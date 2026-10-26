@@ -97,9 +97,4 @@ export class PagePool {
     await Promise.all(promises);
     this.openPagers = {};
   }
-
-  // PLACEHOLDER
-  async updateRootPageId(table: string, id: number) {
-    console.log(table, id);
-  }
 }

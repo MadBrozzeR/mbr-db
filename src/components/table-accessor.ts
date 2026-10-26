@@ -4,7 +4,7 @@ import { PAGE_TYPE } from '../constants';
 import { IndexTreeManager } from './index-tree-manager';
 
 type FieldValue = Buffer | null;
-// type TableInsertResult = { pageId: number; slotIndex: number };
+type TableInsertResult = { pageId: number; slotIndex: number };
 
 export type SplitResult = {
   splitKey: Buffer | null;      // The new signpost key to push up into the parent router node
@@ -28,9 +28,13 @@ export class TableAccessor {
    * Inserts an array of raw fields into the first available leaf page of the table.
    * Automatically handles allocating a new page if an overflow occurs.
    */
-  async insert(fields: FieldValue[]): Promise<Buffer> {
+  async insert(fields: FieldValue[]): Promise<TableInsertResult> {
     const serializedRecord = serializeRow(fields);
-    return this.treeManager.insertIndexed(this.rootId, serializedRecord);
+    const insertResult = await this.treeManager.insertIndexed(this.rootId, serializedRecord);
+    if (insertResult.newRootId > -1) {
+      await this.setRootId(insertResult.newRootId);
+    }
+    return { pageId: insertResult.pageId, slotIndex: insertResult.slotId };
   }
 
   /**
@@ -67,6 +71,12 @@ export class TableAccessor {
       const pageManager = await this.pagerPool.getPage(this.tableName, 0);
       this.rootId = pageManager.getNextPageId();
     }
+  }
+
+  async setRootId(pageId: number) {
+    const pageManager = await this.pagerPool.getPage(this.tableName, 0);
+    pageManager.setNextPageId(this.rootId = pageId);
+    return pageId;
   }
 
   async getRootNode() {

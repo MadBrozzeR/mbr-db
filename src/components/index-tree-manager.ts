@@ -23,12 +23,19 @@ export class IndexTreeManager {
    * Core high-speed transactional insert workflow supporting allocation-free
    * traversal paths and recursive bottom-up internal node split propagation.
    */
-  async insertIndexed(rootPageId: number, rowBuffer: Buffer): Promise<Buffer> {
+  async insertIndexed(rootPageId: number, rowBuffer: Buffer) {
     const traversalStack: number[] = [];
     let currentPageId = rootPageId;
     let currentManager = await this.fetchPage(currentPageId);
 
     const targetKey = getKeyFromRow(rowBuffer);
+
+    const result = {
+      key: targetKey,
+      pageId: -1,
+      slotId: -1,
+      newRootId: -1,
+    };
 
     // PHASE 7: TREE TRAVERSAL MOTOR
     // Navigate down the index topology until a structural data leaf node is located.
@@ -52,42 +59,46 @@ export class IndexTreeManager {
         continue;
       }
       const splitResult = await this.insertOrSplit(localPageId, currentDataToInsert, currentInsertionKey);
-      if (!splitResult) {
-        return targetKey;
+      if (result.pageId < 0 && result.slotId < 0) {
+        result.slotId = splitResult.slotId;
+        result.pageId = splitResult.pageId;
       }
-      if (!splitResult.splitKey) {
-        throw new AppError('ROOT_SPLIT_FAILED');
-      }
+      if (!splitResult.splitKey) return result;
+
       currentInsertionKey = splitResult.splitKey;
       currentDataToInsert = getChildId(splitResult.rightChildId);
       leftPageId = splitResult.leftChildId;
     }
 
-    await this.createNewRoot(leftPageId, currentInsertionKey, currentDataToInsert);
+    result.newRootId = await this.createNewRoot(leftPageId, currentInsertionKey, currentDataToInsert);
 
-    return targetKey;
+    return result;
   }
 
   async insertOrSplit(pageId: number, rowBuffer: Buffer, key: Buffer) {
     const pageManager = await this.fetchPage(pageId);
+    // const type = pageManager.getPageType();
     try {
-      pageManager.insertRowOrSortingKey(rowBuffer, key);
-      return null;
+      const slotId = pageManager.insertRowOrSortingKey(rowBuffer, key);
+      return { slotId, pageId };
     } catch (error) {
       if (AppError.checkReason(error, 'PAGE_OUT_OF_SPACE')) {
+        let targetPageId: number;
         const splitResult = await this.splitPage(pageId);
         const pageManager = await (
           !splitResult.splitKey || key.compare(splitResult.splitKey) > -1
-            ? this.fetchPage(splitResult.rightChildId)
-            : this.fetchPage(splitResult.leftChildId)
+            ? this.fetchPage(targetPageId = splitResult.rightChildId)
+            : this.fetchPage(targetPageId = splitResult.leftChildId)
           );
 
-        pageManager.insertRowOrSortingKey(rowBuffer, key);
+        const slotId = pageManager.insertRowOrSortingKey(rowBuffer, key);
 
-        return splitResult.splitKey ? splitResult : {
-          splitKey: key,
+        return {
+          splitKey: splitResult.splitKey || key,
           leftChildId: splitResult.leftChildId,
           rightChildId: splitResult.rightChildId,
+          slotId,
+          pageId: targetPageId,
         };
       } else {
         throw error;
@@ -98,7 +109,7 @@ export class IndexTreeManager {
   /**
    * Generates a new root node when a split cascades all the way to the top.
    */
-  private async createNewRoot(leftChildId: number, routingKey: Buffer, rightChildId: number | Buffer): Promise<void> {
+  private async createNewRoot(leftChildId: number, routingKey: Buffer, rightChildId: number | Buffer): Promise<number> {
     const { pageManager: newRoot , id: newRootId } = await this.pagerPool.allocatePage(this.tableName);
     newRoot.init(PAGE_TYPE.TREE_INTERNAL);
 
@@ -107,8 +118,7 @@ export class IndexTreeManager {
     newRoot.insertRoutingKey(routingKey, rightChildId);
 
     // Update the engine state directory mapping
-    console.log(newRootId);
-    await this.pagerPool.updateRootPageId(this.tableName, newRootId);
+    return newRootId;
   }
 
   /**

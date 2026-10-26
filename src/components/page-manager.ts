@@ -342,11 +342,9 @@ export class PageManager {
     const type = this.getPageType();
     switch (type) {
       case PAGE_TYPE.TREE_LEAF:
-        this.insertSortedRow(rowBuffer, key);
-        break;
+        return this.insertSortedRow(rowBuffer, key);
       case PAGE_TYPE.TREE_INTERNAL:
-        this.insertRoutingKey(key, rowBuffer);
-        break;
+        return this.insertRoutingKey(key, rowBuffer);
       default:
         throw new AppError('PAGE_TYPE_UNHANDLED', { type });
     }
