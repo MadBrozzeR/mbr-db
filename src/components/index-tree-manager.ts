@@ -1,13 +1,15 @@
-import { DEFAULT_MAX_TREE_DEPTH, PAGE_TYPE } from '../constants';
-import { deserializeRow, getChildId, getKeyFromRow } from '../utils/buffer-utils';
+import { DEFAULT_MAX_TREE_DEPTH, DEFAULT_PRIMARY_KEY_SIZE, PAGE_TYPE } from '../constants';
+import { bufferIncremented, cloneBuffer, deserializeRow, getChildId, getKeyFromRow, isNextKeyValue } from '../utils/buffer-utils';
 import { AppError } from '../utils/errors';
 import { PageManager } from './page-manager';
 import { PagePool } from './page-pool';
 
 export type SplitResult = {
-  splitKey: Buffer | null;      // The new signpost key to push up into the parent router node
-  leftChildId: number;   // The original page ID containing the lower-bound values
-  rightChildId: number;  // The new page ID containing the upper-bound values
+  splitKey: Buffer;       // The new signpost key to push up into the parent router node
+  leftChildId: number;    // The original page ID containing the lower-bound values
+  rightChildId: number;   // The new page ID containing the upper-bound values
+  insertedPageId: number; // Page ID where row were inserted
+  insertedSlotId: number; // Slot ID of inserted record
 }
 
 export class IndexTreeManager {
@@ -23,12 +25,12 @@ export class IndexTreeManager {
    * Core high-speed transactional insert workflow supporting allocation-free
    * traversal paths and recursive bottom-up internal node split propagation.
    */
-  async insertIndexed(rootPageId: number, rowBuffer: Buffer) {
+  async insertIndexed(rootPageId: number, rowBuffer: Buffer, key?: Buffer) {
     const traversalStack: number[] = [];
     let currentPageId = rootPageId;
     let currentManager = await this.fetchPage(currentPageId);
 
-    const targetKey = getKeyFromRow(rowBuffer);
+    let targetKey = key || getKeyFromRow(rowBuffer);
 
     const result = {
       key: targetKey,
@@ -59,7 +61,7 @@ export class IndexTreeManager {
         continue;
       }
       const splitResult = await this.insertOrSplit(localPageId, currentDataToInsert, currentInsertionKey);
-      if (result.pageId < 0 && result.slotId < 0) {
+      if (splitResult.pageType === PAGE_TYPE.TREE_LEAF) {
         result.slotId = splitResult.slotId;
         result.pageId = splitResult.pageId;
       }
@@ -77,28 +79,22 @@ export class IndexTreeManager {
 
   async insertOrSplit(pageId: number, rowBuffer: Buffer, key: Buffer) {
     const pageManager = await this.fetchPage(pageId);
+    const pageType = pageManager.getPageType();
     // const type = pageManager.getPageType();
     try {
-      const slotId = pageManager.insertRowOrSortingKey(rowBuffer, key);
-      return { slotId, pageId };
+      const slotId = pageManager.insertRowOrSortingKey(rowBuffer, key, pageType);
+      return { slotId, pageId, pageType };
     } catch (error) {
       if (AppError.checkReason(error, 'PAGE_OUT_OF_SPACE')) {
-        let targetPageId: number;
-        const splitResult = await this.splitPage(pageId);
-        const pageManager = await (
-          !splitResult.splitKey || key.compare(splitResult.splitKey) > -1
-            ? this.fetchPage(targetPageId = splitResult.rightChildId)
-            : this.fetchPage(targetPageId = splitResult.leftChildId)
-          );
-
-        const slotId = pageManager.insertRowOrSortingKey(rowBuffer, key);
+        const splitResult = await this.splitPage(pageId, rowBuffer, key);
 
         return {
-          splitKey: splitResult.splitKey || key,
+          splitKey: splitResult.splitKey,
           leftChildId: splitResult.leftChildId,
           rightChildId: splitResult.rightChildId,
-          slotId,
-          pageId: targetPageId,
+          slotId: splitResult.insertedSlotId,
+          pageId: splitResult.insertedPageId,
+          pageType,
         };
       } else {
         throw error;
@@ -135,23 +131,31 @@ export class IndexTreeManager {
   /**
    * Copy of the engine's page-splitting routine.
    */
-  private async splitPage(pageId: number): Promise<SplitResult> {
-    const leftPage = (await this.pagerPool.getPage(this.tableName, pageId))?.clone();
-    if (!leftPage) {
-      throw new AppError('PAGE_NOT_FOUND', { pageId, table: this.tableName });
-    }
+  private async splitPage(pageId: number, rowBuffer: Buffer, key: Buffer): Promise<SplitResult> {
+    const leftPage = (await this.fetchPage(pageId)).clone();
     const pageType = leftPage.getPageType();
 
     const { pageManager: newPage, id: newPageId } = await this.pagerPool.allocatePage(this.tableName);
     newPage.init(pageType);
 
+    const lastKey = leftPage.getLastKey();
+    if (!lastKey) throw new AppError('RECORD_NOT_FOUND');
+
+    if (pageType === PAGE_TYPE.TREE_LEAF && isNextKeyValue(key, lastKey)) {
+      const insertedSlotId = newPage.insertRow(rowBuffer);
+      return { splitKey: key, leftChildId: pageId, rightChildId: newPageId, insertedPageId: newPageId, insertedSlotId };
+    }
+
     const middleIndex = leftPage.findMiddleSlotIndex();
 
     if (middleIndex === 0) {
       if (pageType === PAGE_TYPE.TREE_LEAF) {
+        const insertedSlotId = newPage.insertRow(rowBuffer);
         newPage.setNextPageId(leftPage.getNextPageId());
         leftPage.setNextPageId(newPageId);
-        return { splitKey: null, leftChildId: pageId, rightChildId: newPageId };
+        return {
+          splitKey: key, leftChildId: pageId, rightChildId: newPageId, insertedPageId: newPageId, insertedSlotId,
+        };
       } else {
         throw new AppError('CANNOT_SPLIT_INTERNAL');
       }
@@ -161,7 +165,7 @@ export class IndexTreeManager {
     if (!middleRow) throw new AppError('RECORD_NOT_FOUND');
     const middleRowData = deserializeRow(middleRow, 2);
     if (!middleRowData[0] || !middleRowData[1]) throw new AppError('FIELD_NOT_FOUND');
-    const splitKey = middleRowData[0];
+    const splitKey = cloneBuffer(middleRowData[0]);
 
     leftPage.deleteRow(middleIndex);
 
@@ -182,11 +186,67 @@ export class IndexTreeManager {
     }
 
     leftPage.defragment();
+    let insertedPageId: number;
+    let insertedSlotId: number;
+
+    if (key.compare(splitKey) === -1) {
+      insertedPageId = pageId;
+      insertedSlotId = leftPage.insertRowOrSortingKey(rowBuffer, key, pageType);
+    } else {
+      insertedPageId = newPageId;
+      insertedSlotId = newPage.insertRowOrSortingKey(rowBuffer, key, pageType);
+    }
 
     return {
       splitKey,
       leftChildId: pageId,
-      rightChildId: newPageId
+      rightChildId: newPageId,
+      insertedPageId,
+      insertedSlotId,
     };
+  }
+
+  async searchLastKey(rootId: number) {
+    let currentManager = await this.fetchPage(rootId)
+    while (currentManager.getPageType() === PAGE_TYPE.TREE_INTERNAL) {
+      const lastRow = currentManager.getLastRow();
+      if (!lastRow) {
+        throw new AppError('RECORD_NOT_FOUND');
+      }
+      const lastPageReference = deserializeRow(lastRow, 2)[1];
+      if (!lastPageReference) {
+        throw new AppError('RECORD_NOT_FOUND');
+      }
+      if (lastPageReference.length < 4) {
+        throw new AppError('WRONG_FIELD_SIZE', { size: lastPageReference.length, required: 4 });
+      }
+
+      const nextPageId = lastPageReference.readUInt32BE(0);
+      currentManager = await this.fetchPage(nextPageId);
+    }
+    if (currentManager.getPageType() === PAGE_TYPE.TREE_LEAF) {
+      const lastRow = currentManager.getLastRow();
+
+      if (!lastRow) {
+        return null;
+      }
+
+      const key = deserializeRow(lastRow, 1)[0];
+
+      if (!key) {
+        throw new AppError('KEY_NOT_FOUND');
+      }
+
+      return key;
+    }
+    throw new AppError('PAGE_TYPE_UNHANDLED');
+  }
+
+  async getNextKey(rootId: number) {
+    const lastKey = await this.searchLastKey(rootId);
+    if (!lastKey) {
+      return Buffer.alloc(DEFAULT_PRIMARY_KEY_SIZE);
+    }
+    return bufferIncremented(lastKey);
   }
 }

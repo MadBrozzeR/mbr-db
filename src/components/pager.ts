@@ -36,12 +36,6 @@ export class Pager {
         throw error;
       }
     }
-    // Open for reading and writing. The file is created if it does not exist.
-    this.fileHandle = await fs.open(this.filePath, 'a+');
-
-    // Re-open in r+ mode so we can write at arbitrary offsets (a+ forces writes to EOF)
-    await this.fileHandle.close();
-    this.fileHandle = await fs.open(this.filePath, 'r+');
 
     const stat = await this.fileHandle.stat();
     this.totalPages = Math.floor(stat.size / PAGE_SIZE);

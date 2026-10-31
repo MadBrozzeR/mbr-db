@@ -37,6 +37,7 @@ export const METADATA_OFFSET = {
 
 export const DEFAULT_POOL_COUNT = 20;
 export const DEFAULT_MAX_TREE_DEPTH = 16;
+export const DEFAULT_PRIMARY_KEY_SIZE = 4;
 
 export const PAGE_TYPE = {
   META: 0,

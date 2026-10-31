@@ -2,6 +2,7 @@ import { PagePool } from './page-pool';
 import { deserializeRow, serializeRow } from '../utils/buffer-utils';
 import { PAGE_TYPE } from '../constants';
 import { IndexTreeManager } from './index-tree-manager';
+import { replaceItem } from '../utils/array-utils';
 
 type FieldValue = Buffer | null;
 type TableInsertResult = { pageId: number; slotIndex: number };
@@ -29,8 +30,10 @@ export class TableAccessor {
    * Automatically handles allocating a new page if an overflow occurs.
    */
   async insert(fields: FieldValue[]): Promise<TableInsertResult> {
-    const serializedRecord = serializeRow(fields);
-    const insertResult = await this.treeManager.insertIndexed(this.rootId, serializedRecord);
+    const key = fields[0] || await this.treeManager.getNextKey(this.rootId);
+    const targetFields = replaceItem(fields, key, 0);
+    const serializedRecord = serializeRow(targetFields);
+    const insertResult = await this.treeManager.insertIndexed(this.rootId, serializedRecord, key);
     if (insertResult.newRootId > -1) {
       await this.setRootId(insertResult.newRootId);
     }
@@ -63,10 +66,9 @@ export class TableAccessor {
 
   async init() {
     if (this.pagerPool.getTotalPages(this.tableName) === 0) {
-      const { pageManager } = await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.META);
-      pageManager.setNextPageId(1);
+      await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.META);
       const { id } = await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.TREE_LEAF);
-      this.rootId = id;
+      await this.setRootId(id);
     } else {
       const pageManager = await this.pagerPool.getPage(this.tableName, 0);
       this.rootId = pageManager.getNextPageId();
@@ -80,6 +82,11 @@ export class TableAccessor {
   }
 
   async getRootNode() {
+    if (!this.rootId) {
+      const manager = await this.pagerPool.getPage(this.tableName, 0);
+      this.rootId = manager.getNextPageId();
+    }
+
     return this.rootId;
   }
 }

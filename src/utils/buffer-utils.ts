@@ -118,3 +118,38 @@ export function getChildId (id: number | Buffer) {
 
   return id;
 }
+
+export function bufferIncremented(buffer: Buffer) {
+  let shouldIncrementByte = true;
+  let newBuffer = cloneBuffer(buffer);
+
+  for (let index = newBuffer.length - 1 ; shouldIncrementByte && index >= 0 ; --index) {
+    const currentByte = newBuffer[index];
+    if (currentByte === undefined) {
+      throw new Error('Something went wrong. There should be value!')
+    }
+    if (currentByte < 255) {
+      newBuffer[index] = currentByte + 1;
+      shouldIncrementByte = false;
+    } else {
+      newBuffer[index] = 0;
+    }
+  }
+
+  if (shouldIncrementByte) {
+    throw new Error('Buffer overflow!');
+  }
+
+  return newBuffer;
+}
+
+export function cloneBuffer (buffer: Buffer) {
+  const newBuffer = Buffer.allocUnsafe(buffer.length);
+  buffer.copy(newBuffer);
+  return newBuffer;
+}
+
+export function isNextKeyValue(key: Buffer, comparedTo: Buffer) {
+  const nextValue = bufferIncremented(comparedTo);
+  return key.compare(nextValue) === 0;
+}

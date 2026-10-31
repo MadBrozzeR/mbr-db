@@ -114,6 +114,12 @@ export class PageManager {
     }
   }
 
+  getLastRow() {
+    const slotCount = this.getSlotCount();
+    const lastRow = this.getRow(slotCount - 1);
+    return lastRow;
+  }
+
   // --- Header Getters & Setters ---
   getPageType(): PageType { return assertPageType(this.getBuffer().readUInt8(0) & PAGE_HEADER_MASK.TYPE_MASK); }
   getSlotCount(): number { return this.getBuffer().readUInt16BE(2); }
@@ -306,6 +312,7 @@ export class PageManager {
       if (offset !== 0) {
         tempPointer -= length;
         pageBuffer.copy(tempBuffer, tempPointer, offset, offset + length);
+        pageBuffer.copy(tempBuffer, newSlotOffset, slotOffset, slotOffset + SIZE.SLOT);
 
         pageBuffer.writeUInt16BE(tempPointer, newSlotOffset);
         pageBuffer.writeUInt16BE(length, newSlotOffset + 2);
@@ -338,8 +345,8 @@ export class PageManager {
     return fields[0] || null;
   }
 
-  insertRowOrSortingKey(rowBuffer: Buffer, key: Buffer) {
-    const type = this.getPageType();
+  insertRowOrSortingKey(rowBuffer: Buffer, key: Buffer, pageType?: PageType) {
+    const type = pageType || this.getPageType();
     switch (type) {
       case PAGE_TYPE.TREE_LEAF:
         return this.insertSortedRow(rowBuffer, key);
@@ -447,6 +454,11 @@ export class PageManager {
       this.requestAvailableSpace(routingRow.length);
       return this.addRecord(targetSlotIndex, routingRow);
     }
+  }
+
+  getLastKey() {
+    const lastSlot = this.getSlotCount() - 1;
+    return this.getKeyFromSlot(lastSlot);
   }
 
   /**
