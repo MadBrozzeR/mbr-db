@@ -35,21 +35,12 @@ export class PagePool {
 
   async getPage(table: string, index: number) {
     const frame = await this.bufferPool.getFrame(table, index);
-    const manager = frame && this.pageManager.setTarget(frame.buffer, frame);
+    const manager = frame && this.pageManager.setTarget(frame);
     if (!manager) {
       throw new AppError('PAGE_NOT_FOUND', { pageId: index, table });
     }
     return manager;
   }
-
-//   async *iterate(table: string) {
-//     const totalPages = this.bufferPool.getTotalPages(table);
-// 
-//     for (let index = 0 ; index < totalPages ; ++index) {
-//       const pageManager = await this.getPage(table, index);
-//       yield { pageManager, id: index };
-//     }
-//   }
 
   async allocatePage(table: string, pageType: PageType = PAGE_TYPE.TREE_LEAF) {
     const pager = this.getPager(table);

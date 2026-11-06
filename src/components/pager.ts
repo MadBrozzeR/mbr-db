@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs, { FileHandle } from 'node:fs/promises';
-import { PAGE_SIZE } from '../constants';
+import { SIZE } from '../constants';
+import { AppError } from '../utils/errors';
 
 export class Pager {
   private filePath: string;
@@ -38,7 +39,7 @@ export class Pager {
     }
 
     const stat = await this.fileHandle.stat();
-    this.totalPages = Math.floor(stat.size / PAGE_SIZE);
+    this.totalPages = Math.floor(stat.size / SIZE.PAGE);
 
     return this;
   }
@@ -46,19 +47,19 @@ export class Pager {
   /**
    * Reads a 4KB page from disk into a fresh Buffer
    */
-  async readPage(pageId: number): Promise<Buffer> {
-    if (!this.fileHandle) throw new Error(`Pager for ${this.filePath} is not open`);
+  async readPage(pageId: number, reusedBuffer?: Buffer): Promise<Buffer> {
+    if (!this.fileHandle) throw new AppError('PAGER_NOT_OPEN', { file: this.filePath });
 
-    const buffer = Buffer.alloc(PAGE_SIZE);
-    const offset = pageId * PAGE_SIZE;
+    const buffer = reusedBuffer || Buffer.alloc(SIZE.PAGE);
+    const offset = pageId * SIZE.PAGE;
 
-    // Read exactly PAGE_SIZE bytes starting at 'offset' in the file
+    // Read exactly SIZE.PAGE bytes starting at 'offset' in the file
     // and write them into 'buffer' starting at position 0
-    const { bytesRead } = await this.fileHandle.read(buffer, 0, PAGE_SIZE, offset);
+    const { bytesRead } = await this.fileHandle.read(buffer, 0, SIZE.PAGE, offset);
 
     // If we read less than 4KB, it's either an uninitialized page or corrupted
-    if (bytesRead < PAGE_SIZE && bytesRead > 0) {
-      throw new Error(`Corrupted read: Got ${bytesRead} bytes instead of ${PAGE_SIZE} for page ${pageId}`);
+    if (bytesRead < SIZE.PAGE) {
+      throw new AppError('PAGE_CORRUPTED', { size: bytesRead, required: SIZE.PAGE, page: pageId });
     }
 
     return buffer;
@@ -68,15 +69,15 @@ export class Pager {
    * Writes a 4KB buffer to a specific pageId on disk
    */
   async writePage(pageId: number, buffer: Buffer): Promise<void> {
-    if (!this.fileHandle) throw new Error(`Pager for ${this.filePath} is not open`);
-    if (buffer.length !== PAGE_SIZE) {
-      throw new Error(`Buffer size must be exactly ${PAGE_SIZE} bytes`);
+    if (!this.fileHandle) throw new AppError('PAGER_NOT_OPEN', { file: this.filePath });
+    if (buffer.length !== SIZE.PAGE) {
+      throw new AppError('WRONG_PAGE_SIZE', { size: SIZE.PAGE });
     }
 
-    const offset = pageId * PAGE_SIZE;
+    const offset = pageId * SIZE.PAGE;
 
     // Write the buffer to the calculated byte offset
-    await this.fileHandle.write(buffer, 0, PAGE_SIZE, offset);
+    await this.fileHandle.write(buffer, 0, SIZE.PAGE, offset);
 
     // Track if we just grew the file size
     if (pageId >= this.totalPages) {
@@ -89,7 +90,7 @@ export class Pager {
    */
   async allocatePage(): Promise<number> {
     const newPageId = this.totalPages;
-    const emptyBuffer = Buffer.alloc(PAGE_SIZE);
+    const emptyBuffer = Buffer.alloc(SIZE.PAGE);
 
     await this.writePage(newPageId, emptyBuffer);
     return newPageId;

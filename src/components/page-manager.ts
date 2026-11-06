@@ -1,4 +1,4 @@
-import { CacheFrame } from './buffer-pool';
+import { BufferPool, CacheFrame } from './buffer-pool';
 import { SIZE, OFFSET, PageType, PAGE_HEADER_MASK, PAGE_TYPE } from '../constants';
 import { deserializeRow, getChildId, serializeRow } from '../utils/buffer-utils';
 import { BinarySearch } from '../utils/math-utils';
@@ -6,7 +6,6 @@ import { AppError } from '../utils/errors';
 import { assertPageType } from '../utils/type-utils';
 
 type BinarySearchParams = { key: Buffer; manager: PageManager };
-const DEFAULT_BUFFER = Buffer.alloc(0);
 
 export class Slot {
   index = 0;
@@ -35,8 +34,7 @@ export class Slot {
 }
 
 export class PageManager {
-  private pageBuffer: Buffer;
-  private cacheFrame: CacheFrame | null;
+  private cacheFrame: CacheFrame;
   static search = new BinarySearch<BinarySearchParams>(function (index, params) {
     const currentKey = params.manager.getKeyFromSlot(index);
     if (currentKey === null) {
@@ -47,23 +45,21 @@ export class PageManager {
   });
   private slot = new Slot(this);
 
-  constructor(pageBuffer?: Buffer, cacheFrame?: CacheFrame | null) {
-    this.pageBuffer = pageBuffer || DEFAULT_BUFFER;
-    this.cacheFrame = cacheFrame || null;
+  constructor(cacheFrame?: CacheFrame) {
+    this.cacheFrame = cacheFrame || BufferPool.EMPTY;
   }
 
   markDirty() {
     this.cacheFrame && (this.cacheFrame.isDirty = true);
   }
 
-  setTarget(buffer: Buffer, cacheFrame?: CacheFrame) {
-    this.pageBuffer = buffer;
-    this.cacheFrame = cacheFrame || null;
+  setTarget(cacheFrame: CacheFrame) {
+    this.cacheFrame = cacheFrame;
     return this;
   }
 
   getBuffer() {
-    return this.pageBuffer;
+    return this.cacheFrame.buffer;
   }
 
   /**
@@ -465,20 +461,23 @@ export class PageManager {
    * Performs an O(log N) point-lookup search for a unique key on this page.
    * Returns the raw record Buffer slice if found, or null if the key does not exist.
    */
-  findKey(key: Buffer): Buffer | null {
+  findSlotByKey(key: Buffer): number {
     const slotCount = this.getSlotCount();
     if (slotCount === 0) {
-      return null;
+      return -1;
     }
 
     const searchParams = { key, manager: this };
 
     // Execute your zero-allocation interval binary search
-    const searchResult = PageManager.search.run(slotCount, searchParams);
+    return PageManager.search.run(slotCount, searchParams);
+  }
 
+  findRowByKey(key: Buffer): Buffer | null {
+    const slotId = this.findSlotByKey(key);
     // Direct hit: The key exists exactly at the index returned by searchResult
-    if (searchResult > -1) {
-      return this.getRow(searchResult);
+    if (slotId > -1) {
+      return this.getRow(slotId);
     }
 
     // Interval Invariant Match: Key was not found on this page
@@ -486,6 +485,6 @@ export class PageManager {
   }
 
   clone() {
-    return new PageManager(this.pageBuffer, this.cacheFrame);
+    return new PageManager(this.cacheFrame);
   }
 }

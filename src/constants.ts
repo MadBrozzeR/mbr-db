@@ -32,7 +32,6 @@ export const OFFSET = {
 
 export const METADATA_OFFSET = {
   ROOT_PAGE_ID: 8,
-  AUTO_INCREMENT: 12,
 };
 
 export const DEFAULT_POOL_COUNT = 20;

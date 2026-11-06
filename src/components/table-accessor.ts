@@ -1,8 +1,7 @@
 import { PagePool } from './page-pool';
-import { deserializeRow, serializeRow } from '../utils/buffer-utils';
+import { BufferReader, deserializeRow, serializeRow } from '../utils/buffer-utils';
 import { PAGE_TYPE } from '../constants';
 import { IndexTreeManager } from './index-tree-manager';
-import { replaceItem } from '../utils/array-utils';
 
 type FieldValue = Buffer | null;
 type TableInsertResult = { pageId: number; slotIndex: number };
@@ -18,6 +17,7 @@ export class TableAccessor {
   private pagerPool: PagePool;
   private rootId = 0;
   private treeManager: IndexTreeManager;
+  private indexRoot = new Map<number | bigint, number | bigint>();
 
   constructor(tableName: string, pagePool: PagePool) {
     this.tableName = tableName;
@@ -29,11 +29,11 @@ export class TableAccessor {
    * Inserts an array of raw fields into the first available leaf page of the table.
    * Automatically handles allocating a new page if an overflow occurs.
    */
-  async insert(fields: FieldValue[]): Promise<TableInsertResult> {
-    const key = fields[0] || await this.treeManager.getNextKey(this.rootId);
-    const targetFields = replaceItem(fields, key, 0);
+  async insert(fields: FieldValue[], key?: Buffer): Promise<TableInsertResult> {
+    const firstField = key || await this.treeManager.getNextKey(this.rootId);
+    const targetFields: FieldValue[] = [firstField, ...fields];
     const serializedRecord = serializeRow(targetFields);
-    const insertResult = await this.treeManager.insertIndexed(this.rootId, serializedRecord, key);
+    const insertResult = await this.treeManager.insertIndexed(this.rootId, serializedRecord, firstField);
     if (insertResult.newRootId > -1) {
       await this.setRootId(insertResult.newRootId);
     }
@@ -66,12 +66,22 @@ export class TableAccessor {
 
   async init() {
     if (this.pagerPool.getTotalPages(this.tableName) === 0) {
-      await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.META);
-      const { id } = await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.TREE_LEAF);
-      await this.setRootId(id);
+      await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.META); // create Header Page (0)
+      this.pagerPool.pageManager.setNextPageId(1);
+      await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.TREE_LEAF); // create Index Dictionary (1)
+      this.pagerPool.pageManager.insertRow(Buffer.from('8200008400000002', 'hex'));
+      await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.TREE_LEAF); // create first Clustered Data page (2)
     } else {
+      const reader = new BufferReader();
       const pageManager = await this.pagerPool.getPage(this.tableName, 0);
-      this.rootId = pageManager.getNextPageId();
+      const dictionaryRoot = pageManager.getNextPageId();
+      for await (const row of this.treeManager.iterateRows(dictionaryRoot)) {
+        if (!row) continue;
+        reader.set(row);
+        const keyIndex = reader.readRowFieldAsInt();
+        const reference = reader.readRowFieldAsInt();
+        this.indexRoot.set(keyIndex, reference);
+      }
     }
   }
 

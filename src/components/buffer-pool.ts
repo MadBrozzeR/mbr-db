@@ -1,7 +1,9 @@
 import { Pager } from './pager';
 import { AppError } from '../utils/errors';
+import { DEFAULT_POOL_COUNT, SIZE } from '../constants';
+import { BufferReader } from '../utils/buffer-utils';
 
-export interface CacheFrame {
+export type CacheFrame = {
   table: string;
   pageId: number;
   buffer: Buffer;
@@ -12,9 +14,18 @@ export class BufferPool {
   private pagers = new Map<string, Pager>();
   private maxPages: number;
   private pool = new Map<string, CacheFrame>();
+  private globalBuffer: BufferReader;
 
-  constructor(maxPages: number = 20) {
+  static EMPTY: CacheFrame = {
+    table: '',
+    pageId: -1,
+    buffer: Buffer.alloc(0),
+    isDirty: false,
+  };
+
+  constructor(maxPages: number = DEFAULT_POOL_COUNT) {
     this.maxPages = maxPages;
+    this.globalBuffer = new BufferReader(Buffer.alloc(maxPages * SIZE.PAGE));
   }
 
   /**
@@ -57,23 +68,17 @@ export class BufferPool {
       return null;
     }
 
-    // Cache Miss -> Evict oldest page if pool is full
-    if (this.pool.size >= this.maxPages) {
-      await this.evictOne();
-    }
+    const frame = (this.pool.size >= this.maxPages)
+      ? await this.reuseOldestFrame(table, pageId)
+      : {
+        buffer: this.globalBuffer.readData(SIZE.PAGE),
+        table,
+        pageId,
+        isDirty: false,
+      };
 
     // Read from physical disk via Pager
-    const buffer = await pager.readPage(pageId);
-    if (buffer.length === 0) {
-      return null;
-    }
-
-    const frame = {
-      table,
-      pageId,
-      buffer,
-      isDirty: false,
-    };
+    await pager.readPage(pageId, frame.buffer);
 
     this.pool.set(cacheKey, frame);
 
@@ -108,9 +113,32 @@ export class BufferPool {
     }
   }
 
+  async reuseOldestFrame(table: string, pageId: number) {
+    const oldestKey = this.pool.keys().next().value;
+    if (oldestKey === undefined) {
+      throw new AppError('NO_BUFFER_POOL_KEY');
+    };
+
+    const frame = this.pool.get(oldestKey)!;
+
+    // Critically important: If it was changed, save it to disk before forgetting it!
+    if (frame.isDirty) {
+      const pager = this.pagers.get(frame.table);
+      pager && await pager.writePage(frame.pageId, frame.buffer);
+    }
+
+    frame.table = table;
+    frame.pageId = pageId;
+    frame.isDirty = false;
+
+    this.pool.delete(oldestKey);
+    return frame;
+  }
+
   /**
    * Evicts the least recently used page from RAM
    */
+  /*
   private async evictOne(): Promise<void> {
     // The first item in a Map iterator is the oldest inserted/accessed item
     const oldestKey = this.pool.keys().next().value;
@@ -126,6 +154,7 @@ export class BufferPool {
 
     this.pool.delete(oldestKey);
   }
+  */
 
   getTotalPages(table: string) {
     const pager = this.pagers.get(table);

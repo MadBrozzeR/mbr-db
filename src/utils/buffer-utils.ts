@@ -153,3 +153,103 @@ export function isNextKeyValue(key: Buffer, comparedTo: Buffer) {
   const nextValue = bufferIncremented(comparedTo);
   return key.compare(nextValue) === 0;
 }
+
+export function createUInt32(value: number) {
+  const buffer = Buffer.allocUnsafe(4);
+  buffer.writeUInt32BE(value);
+  return buffer;
+}
+
+export class BufferReader {
+  buffer: Buffer = Buffer.alloc(0);
+  index = 0;
+
+  constructor(buffer?: Buffer) {
+    this.buffer = buffer || Buffer.alloc(0);
+  }
+
+  set(buffer: Buffer) {
+    this.buffer = buffer;
+    this.index = 0;
+  }
+
+  skip(length: number) {
+    this.index += length;
+    return this;
+  }
+
+  readInt8() {
+    const value = this.buffer.readUInt8(this.index);
+    this.index += 1;
+    return value;
+  }
+
+  readInt16() {
+    const value = this.buffer.readUInt16BE(this.index);
+    this.index += 2;
+    return value;
+  }
+
+  readInt32() {
+    const value = this.buffer.readUInt32BE(this.index);
+    this.index += 4;
+    return value;
+  }
+
+  readInt64() {
+    const value = this.buffer.readBigUint64BE(this.index);
+    this.index += 8;
+    return value;
+  }
+
+  readData(length: number) {
+    const end = this.index + length;
+    const value = this.buffer.subarray(this.index, end);
+    this.index = end;
+    return value;
+  }
+
+  readFieldSize() {
+    const firstByte = this.readInt8();
+    if (firstByte === 0) return -1;
+    const grade = firstByte & 0x7F;
+
+    switch (grade) {
+      case 125:
+        return this.readInt8();
+      case 126:
+        return this.readInt16();
+      case 127:
+        return this.readInt32();
+      default:
+        return grade;
+    }
+  }
+
+  readRowField() {
+    const length = this.readFieldSize();
+    return (length === -1) ? null : this.readData(length);
+  }
+
+  readRowFieldAsInt() {
+    const length = this.readFieldSize();
+
+    switch (length) {
+      case 1:
+        return this.readInt8();
+      case 2:
+        return this.readInt16();
+      case 4:
+        return this.readInt32();
+      case 8:
+        return this.readInt64();
+    }
+
+    return NaN;
+  }
+
+  skipRowField() {
+    const length = this.readFieldSize();
+    return (length === -1) ? this : this.skip(length);
+  }
+}

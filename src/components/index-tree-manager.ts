@@ -206,6 +206,41 @@ export class IndexTreeManager {
     };
   }
 
+  async getFirstLeaf(rootId: number) {
+    for await (const state of this.lookup(rootId)) {
+      switch (state.page.getPageType()) {
+        case PAGE_TYPE.TREE_INTERNAL:
+          state.next = state.page.getNextPageId();
+          break;
+        case PAGE_TYPE.TREE_LEAF:
+          return state.current;
+      }
+    }
+    throw new AppError('PAGE_NOT_FOUND_1');
+  }
+
+  async *iteratePages(rootId: number) {
+    const firstLeaf = await this.getFirstLeaf(rootId);
+    for await (const state of this.lookup(firstLeaf)) {
+      const nextPage = state.page.getNextPageId();
+      if (nextPage > 0) {
+        state.next = nextPage;
+      }
+      yield state.page;
+    }
+  }
+
+  async *iterateRows(rootId: number, startKey?: Buffer) {
+    const firstLeaf = await this.getFirstLeaf(rootId);
+    let startSlotId = startKey ? this.pagerPool.pageManager.findSlotByKey(startKey) : 0;
+    for await (const page of this.iteratePages(firstLeaf)) {
+      for (const slot of page.iterateSlots(startSlotId)) {
+        yield slot.getRow();
+      }
+      startSlotId = 0;
+    }
+  }
+
   async searchLastKey(rootId: number) {
     let currentManager = await this.fetchPage(rootId)
     while (currentManager.getPageType() === PAGE_TYPE.TREE_INTERNAL) {
@@ -248,5 +283,20 @@ export class IndexTreeManager {
       return Buffer.alloc(DEFAULT_PRIMARY_KEY_SIZE);
     }
     return bufferIncremented(lastKey);
+  }
+
+  async *lookup(rootId: number) {
+    const state = {
+      next: rootId,
+      current: -1,
+      page: this.pagerPool.pageManager,
+    }
+
+    while (state.next > -1) {
+      await this.fetchPage(state.next);
+      state.current = state.next;
+      state.next = -1
+      yield state;
+    }
   }
 }

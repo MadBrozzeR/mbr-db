@@ -1,6 +1,9 @@
 import { template } from '../utils/string-utils';
 
 export const REASON = {
+  PAGER_NOT_OPEN: 'Pager for ${file} is not open',
+  PAGE_CORRUPTED: 'Corrupted read: Got ${size} bytes instead of ${required} for page ${page}',
+  WRONG_PAGE_SIZE: 'Buffer size must be exactly ${size} bytes',
   PAGE_OUT_OF_SPACE: 'Page overflow: Not enough space to store this record.',
   TABLE_NOT_FOUND: 'Could not find table "${table}" in pager',
   PAGE_WAS_NOT_CREATED: 'Page was not created',
@@ -16,6 +19,8 @@ export const REASON = {
   TREE_DEPTH_EXCEEDED: 'Tree depth exeeded. Maximum depth is ${depth}',
   ROOT_SPLIT_FAILED: 'Boundary split requires a clean promotion key',
   PAGE_TYPE_UNHANDLED: 'Cannot handle page type "${type}"',
+  PAGE_NOT_FOUND_1: 'Could not find requested page',
+  NO_BUFFER_POOL_KEY: 'Buffer pool key not found',
 };
 
 type Reason = keyof typeof REASON;
