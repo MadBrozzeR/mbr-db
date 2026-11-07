@@ -119,6 +119,10 @@ export function getChildId (id: number | Buffer) {
   return id;
 }
 
+export function createRoutingRecord(key: Buffer, pageId: number | Buffer) {
+  return serializeRow([key, getChildId(pageId)]);
+}
+
 export function bufferIncremented(buffer: Buffer) {
   let shouldIncrementByte = true;
   let newBuffer = cloneBuffer(buffer);
@@ -161,7 +165,7 @@ export function createUInt32(value: number) {
 }
 
 export class BufferReader {
-  buffer: Buffer = Buffer.alloc(0);
+  private buffer: Buffer = Buffer.alloc(0);
   index = 0;
 
   constructor(buffer?: Buffer) {
@@ -251,5 +255,10 @@ export class BufferReader {
   skipRowField() {
     const length = this.readFieldSize();
     return (length === -1) ? this : this.skip(length);
+  }
+
+  seek(index: number) {
+    this.index = index;
+    return this;
   }
 }

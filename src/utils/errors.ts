@@ -3,6 +3,7 @@ import { template } from '../utils/string-utils';
 export const REASON = {
   PAGER_NOT_OPEN: 'Pager for ${file} is not open',
   PAGE_CORRUPTED: 'Corrupted read: Got ${size} bytes instead of ${required} for page ${page}',
+  PAGE_OUT_OF_BOUNDS: 'Page ${page} is out of bounds',
   WRONG_PAGE_SIZE: 'Buffer size must be exactly ${size} bytes',
   PAGE_OUT_OF_SPACE: 'Page overflow: Not enough space to store this record.',
   TABLE_NOT_FOUND: 'Could not find table "${table}" in pager',
@@ -11,6 +12,7 @@ export const REASON = {
   DUPLICATE_RECORD_ID: 'Record ID ${id} already exists',
   FIELD_NOT_FOUND: 'Required field not found',
   KEY_NOT_FOUND: 'Could not find row key',
+  INDEX_NOT_FOUND: 'Could not find index ${index}',
   RECORD_NOT_FOUND: 'Required record not found',
   SIZE_DOES_NOT_MATCH: 'Source row length (${source}) should be equal to target (${target})',
   PAGE_NOT_FOUND: 'Page ${pageId} not found in "${table}" table',

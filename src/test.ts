@@ -21,4 +21,9 @@ export async function test() {
   await debug.showPage(3);
   await debug.showPage(4);
   await debug.showPage(5);
+  await debug.showPage(6);
+  await debug.showPage(7);
+  await debug.showPage(8);
+  await debug.showPage(9);
+  await debug.showPage(10);
 }

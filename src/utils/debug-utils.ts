@@ -60,8 +60,12 @@ export class PagerDebug {
       await this.pager.open();
       this.isOpen = true;
     }
-    const buffer = await this.pager.readPage(id);
-    console.log('Page: ', id);
-    console.log(debugPage(buffer)?.replace(/(\n|^)/g, '$1  '));
+    try {
+      const buffer = await this.pager.readPage(id);
+      console.log('Page: ', id);
+      console.log(debugPage(buffer)?.replace(/(\n|^)/g, '$1  '));
+    } catch (error) {
+      console.log('No page', id);
+    }
   }
 }

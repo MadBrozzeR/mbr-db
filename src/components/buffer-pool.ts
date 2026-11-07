@@ -64,7 +64,7 @@ export class BufferPool {
       throw new Error(`No active table pager found for table: ${table}`);
     }
 
-    if (pageId >= pager.getTotalPages()) {
+    if (pageId >= pager.getTotalPages() || pageId < 0) {
       return null;
     }
 

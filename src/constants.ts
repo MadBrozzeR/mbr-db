@@ -51,4 +51,10 @@ export const PAGE_HEADER_MASK = {
   IS_COMPACT: 0b01000000,
 };
 
+export const INSERT_STRATEGY = {
+  INSERT: 1,
+  UPDATE: 2,
+} as const;
+
 export type PageType = (typeof PAGE_TYPE)[keyof typeof PAGE_TYPE];
+export type InsertStrategy = (typeof INSERT_STRATEGY)[keyof typeof INSERT_STRATEGY];

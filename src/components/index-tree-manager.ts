@@ -1,6 +1,7 @@
-import { DEFAULT_MAX_TREE_DEPTH, DEFAULT_PRIMARY_KEY_SIZE, PAGE_TYPE } from '../constants';
+import { DEFAULT_MAX_TREE_DEPTH, DEFAULT_PRIMARY_KEY_SIZE, INSERT_STRATEGY, PAGE_TYPE } from '../constants';
 import { bufferIncremented, cloneBuffer, deserializeRow, getChildId, getKeyFromRow, isNextKeyValue } from '../utils/buffer-utils';
 import { AppError } from '../utils/errors';
+import { Stack } from '../utils/stack';
 import { PageManager } from './page-manager';
 import { PagePool } from './page-pool';
 
@@ -21,16 +22,35 @@ export class IndexTreeManager {
     this.pagerPool = pagerPool;
   }
 
+  async findRoute(rootPageId: number, key: Buffer) {
+    const result = new Stack<number>();
+
+    for await (const state of this.lookup(rootPageId)) {
+      result.push(state.current);
+      if (result.isLongerThen(DEFAULT_MAX_TREE_DEPTH)) {
+        throw new AppError('TREE_DEPTH_EXCEEDED', { depth: DEFAULT_MAX_TREE_DEPTH });
+      }
+      if (state.page.getPageType() === PAGE_TYPE.TREE_INTERNAL) {
+        state.next = state.page.routeToChildPage(key);
+      }
+    }
+
+    return result;
+  }
+
   /**
    * Core high-speed transactional insert workflow supporting allocation-free
    * traversal paths and recursive bottom-up internal node split propagation.
    */
-  async insertIndexed(rootPageId: number, rowBuffer: Buffer, key?: Buffer) {
-    const traversalStack: number[] = [];
-    let currentPageId = rootPageId;
-    let currentManager = await this.fetchPage(currentPageId);
+  async insertIndexed(
+    rootPageId: number,
+    rowBuffer: Buffer,
+    key?: Buffer,
+    strategy: number = INSERT_STRATEGY.INSERT
+  ) {
+    const targetKey = key || getKeyFromRow(rowBuffer);
 
-    let targetKey = key || getKeyFromRow(rowBuffer);
+    const traversalStack = await this.findRoute(rootPageId, targetKey);
 
     const result = {
       key: targetKey,
@@ -39,28 +59,21 @@ export class IndexTreeManager {
       newRootId: -1,
     };
 
-    // PHASE 7: TREE TRAVERSAL MOTOR
-    // Navigate down the index topology until a structural data leaf node is located.
-    while (currentManager.getPageType() === PAGE_TYPE.TREE_INTERNAL) {
-      traversalStack.push(currentPageId);
-      if (traversalStack.length > DEFAULT_MAX_TREE_DEPTH) {
-        throw new AppError('TREE_DEPTH_EXCEEDED', { depth: DEFAULT_MAX_TREE_DEPTH });
-      }
-      currentPageId = currentManager.routeToChildPage(targetKey);
-      currentManager = await this.fetchPage(currentPageId);
-    }
-    traversalStack.push(currentPageId);
-
     let currentInsertionKey = targetKey;
     let currentDataToInsert = rowBuffer;
     let leftPageId = -1;
 
-    for (let index = traversalStack.length - 1 ; index >= 0 ; --index) {
-      const localPageId = traversalStack[index];
-      if (localPageId === undefined) {
-        continue;
+    if (strategy === INSERT_STRATEGY.INSERT || strategy === INSERT_STRATEGY.UPDATE) {
+      const page = await this.fetchPage(traversalStack.last() || -1);
+      const search = page.findSlotByKey(targetKey);
+      if (strategy === INSERT_STRATEGY.INSERT && search > -1) {
+        throw new AppError('DUPLICATE_RECORD_ID', { id: `<${targetKey.toString('hex')}>` });
       }
-      const splitResult = await this.insertOrSplit(localPageId, currentDataToInsert, currentInsertionKey);
+      if (strategy === INSERT_STRATEGY.UPDATE && search === -1) throw new AppError('RECORD_NOT_FOUND');
+    }
+
+    for (const pageId of traversalStack) {
+      const splitResult = await this.insertOrSplit(pageId, currentDataToInsert, currentInsertionKey);
       if (splitResult.pageType === PAGE_TYPE.TREE_LEAF) {
         result.slotId = splitResult.slotId;
         result.pageId = splitResult.pageId;
@@ -96,9 +109,9 @@ export class IndexTreeManager {
           pageId: splitResult.insertedPageId,
           pageType,
         };
-      } else {
-        throw error;
       }
+
+      throw error;
     }
   }
 
@@ -142,6 +155,9 @@ export class IndexTreeManager {
     if (!lastKey) throw new AppError('RECORD_NOT_FOUND');
 
     if (pageType === PAGE_TYPE.TREE_LEAF && isNextKeyValue(key, lastKey)) {
+      const rightPageId = leftPage.getNextPageId();
+      leftPage.setNextPageId(newPageId);
+      newPage.setNextPageId(rightPageId);
       const insertedSlotId = newPage.insertRow(rowBuffer);
       return { splitKey: key, leftChildId: pageId, rightChildId: newPageId, insertedPageId: newPageId, insertedSlotId };
     }

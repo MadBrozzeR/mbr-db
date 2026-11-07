@@ -50,6 +50,7 @@ export class Pager {
   async readPage(pageId: number, reusedBuffer?: Buffer): Promise<Buffer> {
     if (!this.fileHandle) throw new AppError('PAGER_NOT_OPEN', { file: this.filePath });
 
+    if (pageId < 0) throw new AppError('PAGE_OUT_OF_BOUNDS', { page: pageId });
     const buffer = reusedBuffer || Buffer.alloc(SIZE.PAGE);
     const offset = pageId * SIZE.PAGE;
 
@@ -57,6 +58,7 @@ export class Pager {
     // and write them into 'buffer' starting at position 0
     const { bytesRead } = await this.fileHandle.read(buffer, 0, SIZE.PAGE, offset);
 
+    if (bytesRead === 0) throw new AppError('PAGE_OUT_OF_BOUNDS', { page: pageId });
     // If we read less than 4KB, it's either an uninitialized page or corrupted
     if (bytesRead < SIZE.PAGE) {
       throw new AppError('PAGE_CORRUPTED', { size: bytesRead, required: SIZE.PAGE, page: pageId });

@@ -1,7 +1,8 @@
 import { PagePool } from './page-pool';
 import { BufferReader, deserializeRow, serializeRow } from '../utils/buffer-utils';
-import { PAGE_TYPE } from '../constants';
+import { INSERT_STRATEGY, PAGE_TYPE } from '../constants';
 import { IndexTreeManager } from './index-tree-manager';
+import { AppError } from '../utils/errors';
 
 type FieldValue = Buffer | null;
 type TableInsertResult = { pageId: number; slotIndex: number };
@@ -12,10 +13,18 @@ export type SplitResult = {
   rightChildId: number;  // The new page ID containing the upper-bound values
 }
 
+function createIndexRootReference(indexId: number, pageId: number) {
+  const buffer = Buffer.from('8200008400000000', 'hex');
+  if (indexId) {
+    buffer.writeUInt16BE(indexId, 1);
+  }
+  buffer.writeUInt32BE(pageId, 4);
+  return buffer;
+}
+
 export class TableAccessor {
   private tableName: string;
   private pagerPool: PagePool;
-  private rootId = 0;
   private treeManager: IndexTreeManager;
   private indexRoot = new Map<number | bigint, number | bigint>();
 
@@ -30,12 +39,13 @@ export class TableAccessor {
    * Automatically handles allocating a new page if an overflow occurs.
    */
   async insert(fields: FieldValue[], key?: Buffer): Promise<TableInsertResult> {
-    const firstField = key || await this.treeManager.getNextKey(this.rootId);
+    const rootId = this.getIndexRootId(0);
+    const firstField = key || await this.treeManager.getNextKey(rootId);
     const targetFields: FieldValue[] = [firstField, ...fields];
     const serializedRecord = serializeRow(targetFields);
-    const insertResult = await this.treeManager.insertIndexed(this.rootId, serializedRecord, firstField);
+    const insertResult = await this.treeManager.insertIndexed(rootId, serializedRecord, firstField);
     if (insertResult.newRootId > -1) {
-      await this.setRootId(insertResult.newRootId);
+      await this.setIndexRootId(0, insertResult.newRootId);
     }
     return { pageId: insertResult.pageId, slotIndex: insertResult.slotId };
   }
@@ -69,7 +79,8 @@ export class TableAccessor {
       await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.META); // create Header Page (0)
       this.pagerPool.pageManager.setNextPageId(1);
       await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.TREE_LEAF); // create Index Dictionary (1)
-      this.pagerPool.pageManager.insertRow(Buffer.from('8200008400000002', 'hex'));
+      this.pagerPool.pageManager.insertRow(createIndexRootReference(0, 2));
+      this.indexRoot.set(0, 2);
       await this.pagerPool.allocatePage(this.tableName, PAGE_TYPE.TREE_LEAF); // create first Clustered Data page (2)
     } else {
       const reader = new BufferReader();
@@ -85,18 +96,28 @@ export class TableAccessor {
     }
   }
 
-  async setRootId(pageId: number) {
-    const pageManager = await this.pagerPool.getPage(this.tableName, 0);
-    pageManager.setNextPageId(this.rootId = pageId);
+  async setIndexRootId(indexId: number, pageId: number) {
+    const pageManager = this.pagerPool.pageManager;
+    await this.pagerPool.getPage(this.tableName, 0);
+    const currentIndexRoot = pageManager.getNextPageId();
+    await this.pagerPool.getPage(this.tableName, currentIndexRoot);
+    const indexRow = createIndexRootReference(indexId, pageId);
+    const insertOrUpdateFlag = INSERT_STRATEGY.INSERT | INSERT_STRATEGY.UPDATE;
+    const insertResult = await this.treeManager.insertIndexed(currentIndexRoot, indexRow, undefined, insertOrUpdateFlag);
+    if (insertResult.newRootId > -1) {
+      await this.pagerPool.getPage(this.tableName, 0);
+      pageManager.setNextPageId(insertResult.newRootId);
+    }
+    this.indexRoot.set(indexId, pageId);
     return pageId;
   }
 
-  async getRootNode() {
-    if (!this.rootId) {
-      const manager = await this.pagerPool.getPage(this.tableName, 0);
-      this.rootId = manager.getNextPageId();
+  getIndexRootId(indexId: number) {
+    const reference = this.indexRoot.get(indexId);
+    if (!reference) {
+      throw new AppError('INDEX_NOT_FOUND', { index: indexId });
     }
 
-    return this.rootId;
+    return Number(reference);
   }
 }
